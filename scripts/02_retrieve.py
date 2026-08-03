@@ -1,0 +1,35 @@
+"""Step 2 (local, CPU): structured lookup + BM25 retrieval -> retrieval.jsonl
+
+  python scripts/02_retrieve.py
+  python scripts/02_retrieve.py --limit 30            # smoke test
+  python scripts/02_retrieve.py --questions artifacts/validation/val_questions.jsonl \
+         --out artifacts/val_retrieval.jsonl          # on the synthetic val set
+"""
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from vifinqa import config
+from vifinqa.retrieval.retrieve import run_retrieval
+from vifinqa.utils.io import setup_stdout
+
+
+def main():
+    setup_stdout()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--questions", default=str(config.QUESTIONS_JSONL))
+    ap.add_argument("--store-dir", default=str(config.STORE_DIR))
+    ap.add_argument("--code-stock", default=str(config.CODE_STOCK_CSV))
+    ap.add_argument("--out", default=str(config.RETRIEVAL_JSONL))
+    ap.add_argument("--depth", type=int, default=config.RETRIEVE_DEPTH)
+    ap.add_argument("--limit", type=int, default=0)
+    args = ap.parse_args()
+
+    run_retrieval(Path(args.questions), Path(args.store_dir), Path(args.code_stock),
+                  Path(args.out), args.depth, args.limit)
+
+
+if __name__ == "__main__":
+    main()
