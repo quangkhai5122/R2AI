@@ -3,9 +3,9 @@
 > **File này là nguồn sự thật duy nhất về LỆNH CHẠY.** Mỗi khi pipeline đổi,
 > ghi đè trực tiếp vào đây (đừng tạo file mới) để không bị lạc phiên bản.
 >
-> Cập nhật lần cuối: **2026-08-04 (P1.6)** — rule composite + hợp nhất scoring
-> lookup vào shortlist. Eval offline: tổng 0.157 → 0.3967; lớp `lookup`
-> 0.783 → **0.883**.
+> Cập nhật lần cuối: **2026-08-04 (P2.0)** — thêm **`--llm-mode select`**:
+> model chỉ chọn dòng trong shortlist bằng JSON, ta sinh pandas. Xoá 3 lớp lỗi
+> đã audit ở lượt #12 (cột năm 35%, đơn vị 15%, regex 90% → **0%**).
 
 ---
 
@@ -34,6 +34,39 @@ python -m pytest tests -q
 `co plan P1: False` ⇒ retrieval là bản CŨ, phải chạy lại §2 trước khi làm gì khác.
 
 ---
+
+## 0bis. ĐỔI GÌ THÌ PHẢI CHẠY LẠI GÌ (tra bảng này trước khi chạy)
+
+| Sửa file ở... | 01 store | 02 retrieve | 03 rule | 04+upload payload | chạy Kaggle |
+|---|:--:|:--:|:--:|:--:|:--:|
+| `extraction/`, `utils/viet_num.py` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `router/`, `retrieval/` | – | ✅ | ✅ | ✅ | ✅ |
+| `codegen/rule_*.py`, `units.py` | – | – | ✅ | ✅ | ✅ |
+| `codegen/prompts.py`, `selection.py`, `generate.py`, `llm_client.py` | – | – | – | ✅ | ✅ |
+| `submission/build.py`, `scripts/05` | – | – | – | – | – |
+| chỉ `tests/`, `*.md` | – | – | – | – | – |
+
+Payload luôn phải dựng lại khi **bất kỳ** file nào trong `vifinqa/` hoặc
+`kaggle/kaggle_codegen.py` đổi, vì manifest băm SHA-256 toàn bộ code.
+
+### Riêng bản P2.0 (`--llm-mode select`) — đang ở trạng thái này
+
+Chỉ đụng `codegen/{selection,prompts,generate}.py` + `kaggle_codegen.py`.
+Đã kiểm chứng: rule baseline trước/sau **giống hệt 150/150 bản ghi**.
+
+```powershell
+# BỎ QUA 01, 02, 03 — store, retrieval.jsonl, codegen_results.jsonl vẫn dùng được
+python scripts/04_make_kaggle_payload.py --dataset-id <user1>/vifinqa-payload
+kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip -m "P2.0 selection mode"
+
+# acc #2
+$env:KAGGLE_CONFIG_DIR = "D:\kaggle_acc2"
+python scripts/04_make_kaggle_payload.py --dataset-id <user2>/vifinqa-payload
+kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip -m "P2.0 selection mode"
+Remove-Item Env:\KAGGLE_CONFIG_DIR
+```
+
+Rồi chạy notebook theo §7bis với `--llm-mode select`.
 
 ## 1. Cài đặt (một lần)
 
@@ -302,21 +335,37 @@ Rule đã tới điểm lợi tức giảm dần: P1.5 +0.026, P1.6 −0.002.
 Arbitration giữ đáp án rule khi bất đồng mà rule tự tin, nên chạy `all` phần lớn
 là tiêu GPU vào việc xác nhận lại thứ đã đúng.
 
+### `--llm-mode select` — DÙNG CÁI NÀY từ nay
+
+Sau lượt #12 (model tự viết pandas): 35% query không lọc cột năm, 15% quên chia
+`ANSWER_SCALE`, 90% thiếu `regex=False` → 175 đáp án mới chỉ ra ~2 câu đúng.
+
+Ở `--llm-mode select`, model **chỉ xuất JSON** `{"op":..., "operands":[...]}`
+chọn dòng trong shortlist; **ta** sinh biểu thức pandas với cột và đơn vị đúng.
+Mô phỏng end-to-end: query thiếu `regex=False` **0%**, query không lọc cột **0%**.
+Output ~30 token thay vì 256 → nhanh hơn nhiều, chạy được `--llm-target all`.
+
 ```
-# ACC #1 — 7B, chỉ câu rỗng (nhanh, nhiều khả năng xong trong 1 phiên)
+# ACC #1 — 7B, selection mode, TOÀN BỘ câu (arbitration mới có việc để làm)
 !python /kaggle/working/code/kaggle_codegen.py --payload $PAYLOAD --backend hf \
-    --model Qwen/Qwen2.5-Coder-7B-Instruct --load-4bit --llm-target empty \
-    --out /kaggle/working/codegen_qwen7b.jsonl \
-    --n 1 --k 4 --max-tokens 256 --batch-size 4 \
+    --model Qwen/Qwen2.5-Coder-7B-Instruct --load-4bit \
+    --llm-mode select --llm-target all \
+    --out /kaggle/working/codegen_sel7b.jsonl \
+    --n 1 --k 4 --max-tokens 96 --batch-size 8 \
     --checkpoint-every 32 --time-budget-min 400
 
-# ACC #2 — 14B, cùng target (khác đúng MỘT biến: kích thước model)
+# ACC #2 — 14B, khác đúng MỘT biến (kích thước model)
 !python /kaggle/working/code/kaggle_codegen.py --payload $PAYLOAD --backend hf \
-    --model Qwen/Qwen2.5-Coder-14B-Instruct --load-4bit --llm-target empty \
-    --out /kaggle/working/codegen_qwen14b.jsonl \
-    --n 1 --k 4 --max-tokens 256 --batch-size 2 \
+    --model Qwen/Qwen2.5-Coder-14B-Instruct --load-4bit \
+    --llm-mode select --llm-target all \
+    --out /kaggle/working/codegen_sel14b.jsonl \
+    --n 1 --k 4 --max-tokens 96 --batch-size 4 \
     --checkpoint-every 32 --time-budget-min 400
 ```
+
+`--max-tokens 96` là đủ cho một object JSON; `--batch-size` tăng được vì output ngắn.
+
+Chế độ cũ `--llm-mode code` vẫn giữ để đối chứng, nhưng không khuyến nghị.
 
 Nếu phiên còn dư thời gian sau khi xong `empty`: chạy lại **cùng lệnh** đổi
 `--llm-target weak` — resume sẽ giữ nguyên phần đã làm và chỉ bổ sung phần yếu.
@@ -336,6 +385,10 @@ python -c "import json;from collections import Counter;r=[json.loads(l) for l in
 
 Đọc kết quả: `rule and llm agree` nhiều = tín hiệu tốt; `disagree; rule weak -> llm`
 là phần LLM thực sự đóng góp; `source=none` còn nhiều = LLM cũng bó tay.
+
+Ở lượt #12 toàn bộ 183 bản ghi đều là `rule produced nothing` — vì
+`--llm-target empty` khiến LLM chỉ thấy câu rule bó tay nên **arbitration chưa
+từng chạy**. Với `--llm-target all` sẽ thấy đủ 4 nhóm lý do.
 
 ## 8. Hiệu chuẩn eval offline ↔ leaderboard (QUAN TRỌNG)
 

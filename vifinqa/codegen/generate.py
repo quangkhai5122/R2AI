@@ -21,10 +21,11 @@ from .executor import run_code, extract_code
 from .to_expression import try_to_expression
 from .formulas import describe_for_prompt
 from ..retrieval.shortlist import build_shortlist, render_shortlist
-from .prompts import SYSTEM, build_user
+from .prompts import SYSTEM, build_user, SELECT_SYSTEM, build_select_user
 from .rule_codegen import try_rule_answer
 from .rule_composite import try_composite_answer
 from .arbitrate import arbitrate
+from .selection import parse_selection, synthesize, confidence as sel_conf
 from .semantic import (
     all_dataframe_refs,
     answer_dataframe_refs,
@@ -76,6 +77,22 @@ class QuestionBundle:
                 self.tables, variants, self.route.get("years") or [],
                 top_n=top_n, encoder=encoder)
         return self._shortlist
+
+    def select_messages(self, encoder=None) -> list[dict]:
+        """Selection mode: the model only picks shortlist rows + an operation."""
+        plan = self.route.get("plan") or {}
+        op = plan.get("op", "lookup")
+        plan_block = ""
+        if op != "lookup" or len(plan.get("facts", [])) > 1:
+            plan_block = ("HINT — the question looks like: " + op + "\n"
+                          "ENTITIES/PERIODS NEEDED: " + ", ".join(
+                              f"{f.get('ticker')}/{f.get('year')}"
+                              for f in plan.get("facts", [])[:8]))
+        return [{"role": "system", "content": SELECT_SYSTEM},
+                {"role": "user", "content": build_select_user(
+                    self.question, self.route,
+                    render_shortlist(self.shortlist(encoder, top_n=12)),
+                    plan_block)}]
 
     def prompt_messages(self, encoder=None) -> list[dict]:
         from ..retrieval.serialize import preview_for_prompt
@@ -144,7 +161,7 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
                 checkpoint_every: int = 32, resume: bool = True,
                 time_budget_s: float = 0.0, run_signature: str = "",
                 use_dense: bool = False, dense_model: str = "",
-                llm_target: str = "all") -> None:
+                llm_target: str = "all", llm_mode: str = "code") -> None:
     """Crash-safe codegen.
 
     Order of operations (important on Kaggle where a session can die at any time):
@@ -234,8 +251,8 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
     llm_todo = [b for b in bundles if b.id not in already and _wanted(b)]
     skipped = len(bundles) - len(llm_todo) - len(already)
     print(f"LLM queue: {len(llm_todo)} questions "
-          f"(target={llm_target}, skipped {skipped}, n={n_samples}, "
-          f"T={temperature})", flush=True)
+          f"(mode={llm_mode}, target={llm_target}, skipped {skipped}, "
+          f"n={n_samples}, T={temperature})", flush=True)
 
     # ---------- step 3: chunked generation with checkpoints ----------
     chunk = max(1, checkpoint_every)
@@ -249,8 +266,11 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
         part = llm_todo[ci * chunk:(ci + 1) * chunk]
         t0 = time.time()
         # keep the no-arg call path: test doubles implement prompt_messages()
-        convs = [(b.prompt_messages(encoder) if encoder is not None
-                  else b.prompt_messages()) for b in part]
+        if llm_mode == "select":
+            convs = [b.select_messages(encoder) for b in part]
+        else:
+            convs = [(b.prompt_messages(encoder) if encoder is not None
+                      else b.prompt_messages()) for b in part]
         try:
             gens = client.chat_batch(convs, n=n_samples, temperature=temperature,
                                      max_tokens=max_tokens)
@@ -267,6 +287,21 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
                 f"LLM returned {len(gens)} result groups for {len(part)} prompts"
             )
         debug_queue = []
+        if llm_mode == "select":
+            for b, samples in zip(part, gens):
+                rec = _selection_result(b, samples, encoder)
+                if rec is not None:
+                    results[b.id] = _arbitrated(b, rule_answers.get(b.id), rec,
+                                                1, 1)
+            _flush(out_path, recs, results)
+            dt, elapsed = time.time() - t0, time.time() - t_start
+            print(f"[chunk {ci+1}/{n_chunks}] {len(part)}q in {dt/60:.1f}min | "
+                  f"elapsed {elapsed/60:.1f}min | {_srcs(recs, results)}", flush=True)
+            if time_budget_s and elapsed + dt > time_budget_s:
+                print("time budget reached -> stopping cleanly", flush=True)
+                break
+            continue
+
         for b, samples in zip(part, gens):
             sr = [(extract_code(s), None) for s in samples]
             sr = [(c, _run_validated(b, c)) for c, _ in sr]
@@ -369,6 +404,34 @@ def _run_validated(b: QuestionBundle, code: str) -> dict:
         result["status"] = "semantic_error"
         result["error"] = "; ".join(check.errors)
     return result
+
+
+def _selection_result(b: QuestionBundle, samples, encoder) -> dict | None:
+    """Turn the model's JSON pick into a verified answer + generated query.
+
+    The model never writes pandas here, so the three failure classes audited in
+    submission #12 (missing column filter, missing unit conversion, regex
+    patterns) cannot occur: selection.synthesize emits the expression.
+    """
+    cands = b.shortlist(encoder, top_n=12)
+    if not cands:
+        return None
+    for text in samples:
+        sel = parse_selection(text)
+        if sel is None or sel.op == "none":
+            continue
+        answer, query, err = synthesize(sel, cands, b.route)
+        if err or answer is None:
+            continue
+        ex = _run_validated(b, query)          # the query must reproduce it
+        if ex["status"] != "ok" or abs(ex["value"] - answer) > 0.011:
+            continue
+        out = _final(b, round(ex["value"], 2), query, "llm_select",
+                     semantic=ex.get("semantic"))
+        out["detail"] = f"op={sel.op} operands={sel.operands}"
+        out["detail_conf"] = sel_conf(sel, cands, answer, b.route)
+        return out
+    return None
 
 
 def _arbitrated(b: QuestionBundle, rule: dict | None, llm_rec: dict,

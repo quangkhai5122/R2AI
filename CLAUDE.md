@@ -88,6 +88,22 @@ Ba warning trên Kaggle là triệu chứng của đúng các lỗi này, vô h�
 thấy câu rule bó tay, nên luôn `rule produced nothing` (183/183). Muốn dùng
 ensemble thật phải chạy `--llm-target weak` hoặc `all`.
 
+## P2.0 — STRUCTURED SELECTION (2026-08-04)
+
+21. **`--llm-mode select`: model CHỌN ô, TA viết pandas.** File mới
+    `codegen/selection.py` (schema JSON, parser chịu lỗi, synthesizer) +
+    `SELECT_SYSTEM`/`build_select_user` trong `prompts.py` +
+    `QuestionBundle.select_messages()` + nhánh `_selection_result` trong
+    `generate.py`. Model xuất `{"op": ..., "operands": [chỉ số shortlist]}`;
+    synthesizer sinh biểu thức với `regex=False`, điều kiện `['col'] == N` và
+    phép chia `ANSWER_SCALE` — nên **ba lớp lỗi của #12 là bất khả thi về mặt
+    cấu trúc**, không phải "hy vọng model làm đúng".
+22. Mô phỏng end-to-end (120 câu, oracle selector): 22 câu rỗng → 19 có đáp án;
+    query thiếu `regex=False` **0%** (trước 90%), query không lọc cột **0%**
+    (trước 35%). Output ~30 token thay vì 256 → chạy được `--llm-target all`
+    trong một phiên, nhờ đó arbitration mới có việc để làm.
+23. Chế độ cũ vẫn giữ ở `--llm-mode code` để đối chứng.
+
 16. **Eval offline phóng đại mức cải thiện ~7 lần.** P1.5: eval 0.157→0.3967
     (+153%) nhưng leaderboard 0.1285→0.1542 (+20%). Nguyên nhân: câu synthetic
     dùng đúng 6 mã VAS rule đã biết, và phân bố lớp khác thực tế (eval chia đều

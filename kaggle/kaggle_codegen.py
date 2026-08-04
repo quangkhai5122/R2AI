@@ -109,6 +109,7 @@ def run_signature(args, manifest_hash: str) -> str:
         "k": args.k,
         "rule_first": args.rule_first,
         "llm_target": args.llm_target,
+        "llm_mode": args.llm_mode,
         # dense matching changes the prompt shortlist -> a different semantic run
         "use_dense": args.use_dense,
         "dense_model": args.dense_model if args.use_dense else "",
@@ -139,6 +140,9 @@ def main():
     ap.add_argument("--use-dense", action="store_true",
                     help="BGE-M3 row matching (needs store/label_index + sentence-transformers)")
     ap.add_argument("--dense-model", default="BAAI/bge-m3")
+    ap.add_argument("--llm-mode", choices=["code", "select"], default="code",
+                    help="select = model picks shortlist rows, we write the pandas "
+                         "(removes the unit/column/regex error classes)")
     ap.add_argument("--llm-target", choices=["all", "empty", "weak"], default="all",
                     help="which questions the LLM should spend GPU time on")
     ap.add_argument("--rule-first", action="store_true",
@@ -222,6 +226,7 @@ def main():
         resume=not args.no_resume, time_budget_s=args.time_budget_min * 60,
         use_dense=args.use_dense, dense_model=args.dense_model,
         llm_target=args.llm_target,
+        llm_mode=args.llm_mode,
         run_signature=signature,
     )
     print(f"OK -> {args.out}")
