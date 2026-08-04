@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from ..config import YEAR_MIN, YEAR_MAX
+from .metric_phrase import extract_metric
 from ..utils.viet_text import (
     fuzz_token_set,
     norm,
@@ -76,6 +77,8 @@ class Parsed:
     output_type: str = "number"       # number | percent | percentage_point | ratio | year | count
     growth: bool = False
     metric_norm: str = ""
+    metric_wide: str = ""
+    metric_variants: list[str] = field(default_factory=list)
 
 
 class StockMap:
@@ -263,15 +266,31 @@ def parse_question(question: str, stock: StockMap) -> Parsed:
                 p.unit_scale, p.unit_name = match
                 break
 
-    # metric phrase = question minus tail/company-name substrings/stop tokens
+    # --- metric phrase ---------------------------------------------------
+    # EXTRACTIVE (cut the question down to the metric span). The old
+    # SUBTRACTIVE version (question minus stopwords) left noise like
+    # "so du"/"tinh dong" in the phrase and pushed correct rows below the
+    # match threshold - see P1_STRATEGY_REVIEW.md for the measurements.
+    aliases: list[str] = []
+    for t in p.tickers:
+        aliases.extend(stock.aliases_of.get(t, []))
+    mp = extract_metric(question, aliases, p.tickers)
+    p.metric_norm = mp.core
+    p.metric_wide = mp.wide
+    p.metric_variants = mp.variants()
+
+    # legacy subtractive phrase kept as a last-resort variant
     m = _STRIP_PHRASES.sub(" ", qn)
     for t in p.tickers:
         for alias in stock.aliases_of.get(t, []):
             m = m.replace(alias, " ")
         m = re.sub(rf"(?<![0-9a-z]){t.lower()}(?![0-9a-z])", " ", m)
-    metric = [tok for tok in m.split()
-              if tok not in STOP_TOKENS and not _YEAR.fullmatch(tok)]
-    p.metric_norm = " ".join(metric)
+    legacy = " ".join(tok for tok in m.split()
+                      if tok not in STOP_TOKENS and not _YEAR.fullmatch(tok))
+    if legacy and legacy not in p.metric_variants:
+        p.metric_variants.append(legacy)
+    if not p.metric_norm:
+        p.metric_norm = legacy
     return p
 
 

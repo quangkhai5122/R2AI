@@ -19,6 +19,7 @@ from pathlib import Path
 import pandas as pd
 
 from ..codegen.executor import run_code
+from ..codegen.to_expression import try_to_expression
 from ..codegen.semantic import all_dataframe_refs
 from ..config import SUBMISSION_K, TABLE_POS_BASE, TABLE_POS_MODE
 from ..extraction.build_store import Store
@@ -64,6 +65,7 @@ def build_submission(retrieval_path: Path, codegen_path: Path, store_dir: Path,
                      out_dir: Path, sub_k: int = SUBMISSION_K,
                      pos_base: int = TABLE_POS_BASE, pos_mode: str = TABLE_POS_MODE,
                      questions_path: Path | None = None, expand_docs: bool = False,
+                     offline_eval: bool = False,
                      json_name: str = "results.json") -> Path:
     out_dir = ensure_dir(out_dir)
     data_dir = ensure_dir(out_dir / "data")
@@ -156,10 +158,14 @@ def build_submission(retrieval_path: Path, codegen_path: Path, store_dir: Path,
         })
 
     json_path = out_dir / json_name
+    _validate_expression_form(entries)
     _validate_replay(entries, out_dir)
     write_json(json_path, entries)
 
-    zip_path = out_dir / "submission.zip"
+    _warn_if_not_official(entries, offline_eval, out_dir)
+
+    zip_path = out_dir / ("OFFLINE_EVAL_DO_NOT_UPLOAD.zip" if offline_eval
+                          else "submission.zip")
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
         z.write(json_path, json_name)
         for name in sorted(written_csv):
@@ -170,16 +176,87 @@ def build_submission(retrieval_path: Path, codegen_path: Path, store_dir: Path,
     return zip_path
 
 
+def _warn_if_not_official(entries: list[dict], offline_eval: bool, out_dir: Path) -> None:
+    """Guard against uploading a synthetic-eval submission to the leaderboard.
+
+    The offline eval suite invents its own question ids (1..N) and its own
+    question text. The grader matches by id, so uploading it scores 0.0 on every
+    metric AND burns one of the daily submission slots. This check compares the
+    built ids/questions with the official questions.jsonl and shouts when they
+    do not line up.
+    """
+    from ..config import QUESTIONS_JSONL
+    marker = out_dir / "DO_NOT_UPLOAD.txt"
+    try:
+        official = {q["id"]: q["question"] for q in read_jsonl(QUESTIONS_JSONL)}
+    except Exception:  # noqa: BLE001 - dataset may be absent on a worker box
+        official = {}
+    mismatch = 0
+    if official:
+        for e in entries:
+            q = official.get(e["id"])
+            if q is None or q.strip() != str(e.get("question", "")).strip():
+                mismatch += 1
+    synthetic = offline_eval or (official and mismatch > len(entries) * 0.5)
+    if synthetic:
+        marker.write_text(
+            "This folder was built from a SYNTHETIC offline-eval question set.\n"
+            "Uploading it to the leaderboard scores 0.0 and wastes a submission "
+            "slot. Use it only with scripts/07_evaluate.py.\n", encoding="utf-8")
+        stale = out_dir / "submission.zip"
+        if stale.exists():      # a previous run left an uploadable-looking file
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        print("=" * 72)
+        print("[STOP] This submission does NOT match the official questions "
+              f"({mismatch}/{len(entries)} differ).")
+        print("       It is an OFFLINE EVAL artifact - do NOT upload it.")
+        print("=" * 72)
+    elif marker.exists():
+        marker.unlink()
+
+
 def _to_expression(code: str) -> str:
-    """The official example uses expression-style pandas_query. Convert a
-    single-line `answer = <expr>` into `<expr>`; keep multi-line scripts as-is
-    (their `answer` field is still valid either way)."""
-    q = code.strip()
+    """`pandas_query` MUST be a single expression.
+
+    LEADERBOARD-CONFIRMED (submission #6): the grader evaluates the query as an
+    expression. Multi-line scripts raise SyntaxError and are scored as crashes —
+    233 such queries cut EXECUTION_ACCURACY from 0.085 to 0.0613 even though
+    ANSWER_ACCURACY rose. So every script is inlined into one expression here;
+    the value is re-verified against `answer` by _validate_replay afterwards.
+    """
+    q = (code or "").strip()
+    if not q:
+        return "0.0"
     if "\n" not in q and q.startswith("answer"):
-        rhs = q.split("=", 1)
-        if len(rhs) == 2 and "==" not in q.split("=", 1)[0]:
-            return rhs[1].strip()
-    return q
+        head, sep, rhs = q.partition("=")
+        if sep and "==" not in head:
+            return rhs.strip()
+    expr, err = try_to_expression(q)
+    if err:
+        _EXPR_FAILURES.append(err)
+    return expr
+
+
+_EXPR_FAILURES: list[str] = []
+
+
+def _validate_expression_form(entries: list[dict]) -> None:
+    """Loud check: every query must compile in 'eval' mode (grader semantics)."""
+    bad = []
+    for e in entries:
+        try:
+            compile(e["pandas_query"], "<q>", "eval")
+        except SyntaxError:
+            bad.append(e["id"])
+    if bad:
+        print(f"[WARN] {len(bad)} pandas_query are NOT single expressions and will "
+              f"be scored as crashes by the grader: ids={bad[:10]}"
+              f"{'...' if len(bad) > 10 else ''}")
+    else:
+        print(f"expression-form check: all {len(entries)} queries eval-compilable")
 
 
 def _write_table_csv(store: Store, report_id: str, table_pos: int, path: Path) -> None:

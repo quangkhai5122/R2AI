@@ -17,8 +17,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--submission", required=True)
     ap.add_argument("--gold", required=True)
+    ap.add_argument("--by-class", action="store_true",
+                    help="break metrics down by question class (eval suite)")
     args = ap.parse_args()
-    evaluate(Path(args.submission), Path(args.gold))
+    evaluate(Path(args.submission), Path(args.gold), by_class=args.by_class)
 
 
 if __name__ == "__main__":

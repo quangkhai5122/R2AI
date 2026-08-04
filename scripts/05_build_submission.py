@@ -34,6 +34,10 @@ def main():
                          "'order' is a legacy debug mode")
     ap.add_argument("--questions", default="",
                     help="official test questions.jsonl -> only submit those ids")
+    ap.add_argument("--offline-eval", action="store_true",
+                    help="building against the synthetic eval suite: names the zip "
+                         "OFFLINE_EVAL_DO_NOT_UPLOAD.zip so it cannot be submitted "
+                         "by accident")
     ap.add_argument("--expand-docs", action="store_true",
                     help="add sibling doc_type + year+1 reports to relevant_docs "
                          "(recall/F2 experiment, one variable per submission!)")
@@ -43,7 +47,7 @@ def main():
                      Path(args.out_dir), args.sub_k, args.pos_base,
                      pos_mode=args.pos_mode,
                      questions_path=Path(args.questions) if args.questions else None,
-                     expand_docs=args.expand_docs)
+                     expand_docs=args.expand_docs, offline_eval=args.offline_eval)
 
 
 if __name__ == "__main__":

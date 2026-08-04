@@ -22,12 +22,29 @@ Rules:
    'Năm nay'); if col_name is empty, the smallest `col` with data is usually the
    current year, the next one the prior year.
 5. Convert units: value_vnd = value * unit_scale. The question asks the answer in a
-   specific unit -> answer = round(value_vnd / ANSWER_SCALE, 2). For percentage
-   questions, answer = round(ratio * 100, 2).
+   specific unit -> answer = round(value_vnd / ANSWER_SCALE, 2).
+5b. UNIT OF THE ANSWER (organizer-confirmed, a frequent source of wrong answers):
+   the answer must be in the unit the QUESTION asks for.
+     output_type=percent            -> return 90 for "90%", NEVER 0.9.
+                                       a ratio must be multiplied by 100;
+                                       a cell that is already a percentage must NOT.
+     output_type=percentage_point   -> difference of two percentages (p1 - p2).
+     output_type=ratio              -> "lần"/"vòng": plain a / b, do NOT x100.
+     output_type=year               -> an integer year such as 2023.
+     output_type=count              -> an integer count of companies/items.
+     output_type=number             -> money divided by ANSWER_SCALE.
 6. Robustness: ALWAYS pass na=False to .str.contains (labels can be NaN);
    the `code` column may load as numbers -> compare via df['code'].astype(str).
-7. End with a line assigning the final float: answer = ...
-8. Output ONLY one ```python code block, nothing else."""
+7. CRITICAL — the answer is graded by EVALUATING your code as a SINGLE PYTHON
+   EXPRESSION. Write exactly ONE line of the form `answer = <expression>`.
+   No intermediate variables, no comments, no extra statements, no if/else, no
+   loops: those are SyntaxErrors when evaluated and score as a crash.
+   BAD:
+       rows = df1[df1['label'].str.contains('x', na=False)]
+       answer = round(float(rows['value'].iloc[0]) / 1e9, 2)
+   GOOD:
+       answer = round(float(df1[df1['label'].str.contains('x', na=False) & (df1['col'] == 1)]['value'].iloc[0]) * 1e6 / 1e9, 2)
+8. Output ONLY one ```python code block containing that single line."""
 
 DEBUG_SYSTEM = SYSTEM
 
@@ -36,6 +53,11 @@ USER_TMPL = """Question (Vietnamese): {question}
 Parsed intent: ticker={tickers}, years={years}, doc_type={doc_type}, \
 output_type={output_type}, answer unit = {unit_name} \
 (ANSWER_SCALE = {unit_scale:g}), percent={is_percent}
+
+{plan_block}
+CANDIDATE ROWS (pre-matched to the question's metric — prefer these; idx is for
+your reading only, address rows in code by their label/code/col):
+{shortlist_block}
 
 Available DataFrames:
 {tables_block}
@@ -57,11 +79,13 @@ Previous code:
 ```
 Error: {error}
 
-Fix the code. Same rules apply (only df1..dfN, pd, np; end with `answer = ...`;
-output ONLY one ```python block)."""
+Fix the code. Same rules apply: only df1..dfN, pd, np; ONE line
+`answer = <single expression>` (no intermediate variables/comments/control flow);
+output ONLY one ```python block."""
 
 
-def build_user(question: str, route: dict, tables: list[dict]) -> str:
+def build_user(question: str, route: dict, tables: list[dict],
+               shortlist_block: str = "", plan_block: str = "") -> str:
     blocks = []
     for t in tables:
         us = t.get("unit_scale")
@@ -84,6 +108,8 @@ def build_user(question: str, route: dict, tables: list[dict]) -> str:
         is_percent=route.get("is_percent", False),
         output_type=route.get("output_type", "number"),
         tables_block="\n".join(blocks),
+        shortlist_block=shortlist_block or "(none)",
+        plan_block=plan_block or "",
     )
 
 

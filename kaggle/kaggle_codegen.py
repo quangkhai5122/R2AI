@@ -108,6 +108,10 @@ def run_signature(args, manifest_hash: str) -> str:
         "debug_rounds": args.debug_rounds,
         "k": args.k,
         "rule_first": args.rule_first,
+        "llm_target": args.llm_target,
+        # dense matching changes the prompt shortlist -> a different semantic run
+        "use_dense": args.use_dense,
+        "dense_model": args.dense_model if args.use_dense else "",
         "seed": args.seed,
         "load_4bit": args.load_4bit,
         "max_input_tokens": args.max_input_tokens,
@@ -132,6 +136,11 @@ def main():
     ap.add_argument("--debug-rounds", type=int, default=1)
     ap.add_argument("--k", type=int, default=6, help="tables shown to the LLM")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--use-dense", action="store_true",
+                    help="BGE-M3 row matching (needs store/label_index + sentence-transformers)")
+    ap.add_argument("--dense-model", default="BAAI/bge-m3")
+    ap.add_argument("--llm-target", choices=["all", "empty", "weak"], default="all",
+                    help="which questions the LLM should spend GPU time on")
     ap.add_argument("--rule-first", action="store_true",
                     help="skip the LLM for high-confidence rule matches (faster)")
     ap.add_argument("--checkpoint-every", type=int, default=32,
@@ -211,6 +220,8 @@ def main():
         limit=args.limit, use_rule_fallback=True, rule_first=args.rule_first,
         max_tokens=args.max_tokens, checkpoint_every=args.checkpoint_every,
         resume=not args.no_resume, time_budget_s=args.time_budget_min * 60,
+        use_dense=args.use_dense, dense_model=args.dense_model,
+        llm_target=args.llm_target,
         run_signature=signature,
     )
     print(f"OK -> {args.out}")

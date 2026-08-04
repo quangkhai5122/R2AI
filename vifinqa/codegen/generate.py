@@ -18,8 +18,13 @@ from ..extraction.build_store import Store
 from ..retrieval.serialize import tidy_csv_text, df_roundtrip
 from ..utils.io import read_jsonl, write_jsonl
 from .executor import run_code, extract_code
+from .to_expression import try_to_expression
+from .formulas import describe_for_prompt
+from ..retrieval.shortlist import build_shortlist, render_shortlist
 from .prompts import SYSTEM, build_user
 from .rule_codegen import try_rule_answer
+from .rule_composite import try_composite_answer
+from .arbitrate import arbitrate
 from .semantic import (
     all_dataframe_refs,
     answer_dataframe_refs,
@@ -36,6 +41,7 @@ class QuestionBundle:
         self.run_signature = run_signature
         self.cands = rec["candidates"][:k]
         self.tables: list[dict] = []
+        self._shortlist = None
         self.dfs: dict = {}
         by_ticker: dict[str, list[dict]] = {}
         for c in self.cands:
@@ -61,11 +67,32 @@ class QuestionBundle:
             })
             self.dfs[var] = df_roundtrip(csv_text)
 
-    def prompt_messages(self) -> list[dict]:
+    def shortlist(self, encoder=None, top_n: int = 8):
+        """Row-level schema linking (P1.1): pre-match candidate cells so the
+        model chooses among ~8 rows instead of scanning every table."""
+        if self._shortlist is None:
+            variants = self.route.get("metric_variants") or [self.route.get("metric_norm", "")]
+            self._shortlist = build_shortlist(
+                self.tables, variants, self.route.get("years") or [],
+                top_n=top_n, encoder=encoder)
+        return self._shortlist
+
+    def prompt_messages(self, encoder=None) -> list[dict]:
         from ..retrieval.serialize import preview_for_prompt
         tables = [{**t, "preview": preview_for_prompt(t["csv_text"])} for t in self.tables]
+        plan = self.route.get("plan") or {}
+        op = plan.get("op", "lookup")
+        plan_block = ""
+        if op != "lookup" or len(plan.get("facts", [])) > 1:
+            plan_block = (describe_for_prompt(op, len(plan.get("facts", []))) + "\n"
+                          "FACTS TO LOCATE: " + ", ".join(
+                              f"{f.get('ticker')}/{f.get('year')}/{f.get('doc_type')}"
+                              for f in plan.get("facts", [])[:8]) + "\n")
         return [{"role": "system", "content": SYSTEM},
-                {"role": "user", "content": build_user(self.question, self.route, tables)}]
+                {"role": "user", "content": build_user(
+                    self.question, self.route, tables,
+                    shortlist_block=render_shortlist(self.shortlist(encoder)),
+                    plan_block=plan_block)}]
 
     def used_vars(self, code: str) -> list[dict]:
         # Submission replay must receive every dataframe the program may access,
@@ -115,7 +142,9 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
                 debug_rounds: int = 1, limit: int = 0, use_rule_fallback: bool = True,
                 rule_first: bool = False, max_tokens: int = 768,
                 checkpoint_every: int = 32, resume: bool = True,
-                time_budget_s: float = 0.0, run_signature: str = "") -> None:
+                time_budget_s: float = 0.0, run_signature: str = "",
+                use_dense: bool = False, dense_model: str = "",
+                llm_target: str = "all") -> None:
     """Crash-safe codegen.
 
     Order of operations (important on Kaggle where a session can die at any time):
@@ -132,6 +161,12 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
     """
     t_start = time.time()
     store = Store(store_dir, cache_size=4)
+    # optional BGE-M3 row matcher (P1.4). None -> lexical only, never fatal.
+    encoder = None
+    if use_dense:
+        from ..retrieval.dense import load_encoder, DEFAULT_MODEL
+        encoder = load_encoder(dense_model or DEFAULT_MODEL,
+                               cache_dir=Path(store_dir) / "label_index")
     recs = read_jsonl(retrieval_path)
     if limit:
         recs = recs[:limit]
@@ -160,15 +195,20 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
 
     # ---------- step 2: rule baseline for everything, flush immediately ----------
     print(f"rule baseline over {len(bundles)} questions...", flush=True)
-    rule_conf = {}
+    rule_conf, rule_answers = {}, {}
     for b in bundles:
         if b.id in already:                     # keep the better LLM answer
             results[b.id] = prev[b.id]
             rule_conf[b.id] = 0.0
             continue
-        r = _rule_result(b) if use_rule_fallback else None
+        r = _rule_result(b, encoder) if use_rule_fallback else None
         results[b.id] = r if r is not None else _empty_result(b, "rule found nothing")
         rule_conf[b.id] = r["detail_conf"] if r else 0.0
+        if r is not None:
+            rule_answers[b.id] = {"answer": r["answer"],
+                                  "pandas_query": r["pandas_query"],
+                                  "confidence": r["detail_conf"],
+                                  "source": r["source"]}
     _flush(out_path, recs, results)
     print(f"  baseline written ({_srcs(recs, results)}) -> {out_path}", flush=True)
 
@@ -176,11 +216,26 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
         print(f"codegen done (rule only): {_srcs(recs, results)} -> {out_path}")
         return
 
-    llm_todo = [b for b in bundles if b.id not in already
-                and not (rule_first and rule_conf.get(b.id, 0) >= 90)]
+    # GPU budget targeting. A Kaggle session fits ~1000 questions; spending it
+    # on questions the rule already answers confidently is waste, because
+    # arbitration keeps the rule answer anyway when the two disagree.
+    #   all   - every question (default, most thorough)
+    #   empty - ONLY questions with no deterministic answer  (best value/hour)
+    #   weak  - empty + rule answers flagged AMBIGUOUS / low confidence
+    def _wanted(b) -> bool:
+        if rule_first and rule_conf.get(b.id, 0) >= 90:
+            return False
+        if llm_target == "empty":
+            return b.id not in rule_answers
+        if llm_target == "weak":
+            return b.id not in rule_answers or rule_conf.get(b.id, 0) < 78
+        return True
+
+    llm_todo = [b for b in bundles if b.id not in already and _wanted(b)]
     skipped = len(bundles) - len(llm_todo) - len(already)
     print(f"LLM queue: {len(llm_todo)} questions "
-          f"(rule-first skipped {skipped}, n={n_samples}, T={temperature})", flush=True)
+          f"(target={llm_target}, skipped {skipped}, n={n_samples}, "
+          f"T={temperature})", flush=True)
 
     # ---------- step 3: chunked generation with checkpoints ----------
     chunk = max(1, checkpoint_every)
@@ -193,7 +248,9 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
             break
         part = llm_todo[ci * chunk:(ci + 1) * chunk]
         t0 = time.time()
-        convs = [b.prompt_messages() for b in part]
+        # keep the no-arg call path: test doubles implement prompt_messages()
+        convs = [(b.prompt_messages(encoder) if encoder is not None
+                  else b.prompt_messages()) for b in part]
         try:
             gens = client.chat_batch(convs, n=n_samples, temperature=temperature,
                                      max_tokens=max_tokens)
@@ -215,9 +272,11 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
             sr = [(c, _run_validated(b, c)) for c, _ in sr]
             win = _vote(sr)
             if win:
-                results[b.id] = _final(b, win["answer"], win["code"], "llm",
-                                       votes=win["votes"], n_ok=win["n_ok"],
-                                       semantic=win.get("semantic"))
+                llm_rec = _final(b, win["answer"], win["code"], "llm",
+                                 votes=win["votes"], n_ok=win["n_ok"],
+                                 semantic=win.get("semantic"))
+                results[b.id] = _arbitrated(b, rule_answers.get(b.id), llm_rec,
+                                            win.get("votes", 1), n_samples)
             else:
                 err = next((r["error"] for _c, r in sr if r["error"]), "no output")
                 debug_queue.append((b, sr[0][0] if sr else "", err))
@@ -249,10 +308,12 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
                 code = extract_code(samples[0]) if samples else ""
                 r = _run_validated(b, code)
                 if r["status"] == "ok":
-                    results[b.id] = _final(
+                    llm_rec = _final(
                         b, round(r["value"], 2), code, "llm_debug",
                         semantic=r.get("semantic"),
                     )
+                    results[b.id] = _arbitrated(b, rule_answers.get(b.id),
+                                                llm_rec, 1, 1)
                 else:
                     nxt.append((b, code or old_code, r["error"] or "no output"))
             debug_queue = nxt
@@ -310,7 +371,45 @@ def _run_validated(b: QuestionBundle, code: str) -> dict:
     return result
 
 
-def _rule_result(b: QuestionBundle) -> dict | None:
+def _arbitrated(b: QuestionBundle, rule: dict | None, llm_rec: dict,
+                votes: int, n_samples: int) -> dict:
+    """Merge the deterministic answer with the LLM's, recording the decision.
+
+    Self-consistency is folded into the LLM's confidence: an answer that won
+    2/2 votes is trusted more than one that won 1/4.
+    """
+    llm_conf = 50.0 + 40.0 * (votes / max(1, n_samples))
+    verdict = arbitrate(rule, {"answer": llm_rec["answer"],
+                               "pandas_query": llm_rec["pandas_query"],
+                               "confidence": llm_conf,
+                               "source": llm_rec["source"]})
+    if verdict is None or verdict.used == "llm":
+        out = llm_rec
+    else:
+        out = _final(b, verdict.answer, verdict.pandas_query, verdict.source)
+        out["detail_conf"] = verdict.confidence
+    out["arbitration"] = {"reason": verdict.reason if verdict else "no verdict",
+                          "used": verdict.used if verdict else "llm",
+                          "rule_answer": (rule or {}).get("answer"),
+                          "llm_answer": llm_rec["answer"],
+                          "rule_conf": (rule or {}).get("confidence", 0.0),
+                          "llm_conf": round(llm_conf, 1)}
+    return out
+
+
+def _rule_result(b: QuestionBundle, encoder=None) -> dict | None:
+    """Deterministic answer: composite solver first (growth/difference/ratio/
+    ranking), then the single-fact lookup rule."""
+    ca = try_composite_answer(b.route, b.tables, encoder=encoder)
+    if ca.ok:
+        ex = _run_validated(b, ca.pandas_query)
+        if ex["status"] == "ok":
+            out = _final(b, round(ex["value"], 2), ca.pandas_query,
+                         "rule_composite", semantic=ex.get("semantic"))
+            out["detail"] = ca.detail
+            out["detail_conf"] = ca.confidence
+            return out
+
     ra = try_rule_answer(b.route, b.tables)
     if not ra.ok:
         return None
@@ -326,8 +425,17 @@ def _rule_result(b: QuestionBundle) -> dict | None:
 
 def _final(b: QuestionBundle, answer: float, code: str, source: str,
            votes: int = 1, n_ok: int = 1, semantic: dict | None = None) -> dict:
+    # The grader EVALUATES pandas_query as an expression: a multi-line script is
+    # a SyntaxError == crash (leaderboard-confirmed, submission #6). Inline the
+    # straight-line script into one expression right where it is produced, so
+    # every downstream consumer (checkpoints, resume, submission) is already
+    # in the graded form. used_vars is derived from the ORIGINAL code so that
+    # evidence still covers every DataFrame the model touched.
+    used = b.used_vars(code)
+    query, inline_err = try_to_expression(code)
     return {"id": b.id, "question": b.question, "answer": float(answer),
-            "pandas_query": code, "used_vars": b.used_vars(code),
+            "pandas_query": query, "used_vars": used,
+            "inline_error": inline_err or "",
             "status": "ok", "source": source, "votes": votes, "n_ok": n_ok,
             "detail": "", "detail_conf": 0.0,
             "semantic": semantic or {},

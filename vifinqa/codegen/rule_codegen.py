@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 from ..utils.viet_text import label_metric_score, norm
 from ..retrieval.serialize import df_roundtrip
+from ..retrieval.shortlist import build_shortlist
+from .units import percent_from_cell, cell_is_already_percent, check_answer_unit
 
 
 @dataclass
@@ -34,69 +36,95 @@ def _year_col_score(col_name: str, year: int) -> int:
     return 0
 
 
-def try_rule_answer(route: dict, tables: list[dict], min_label: float = 78.0) -> RuleAnswer:
-    """tables: [{var, report_id, table_pos, report_year, csv_text, unit_scale}]"""
+AMBIGUOUS_MARGIN = 8.0     # best-vs-runner-up gap below which we distrust the pick
+
+
+def try_rule_answer(route: dict, tables: list[dict], min_label: float = 62.0,
+                    unambiguous_margin: float = 0.0) -> RuleAnswer:
+    """tables: [{var, report_id, table_pos, report_year, csv_text, unit_scale}]
+
+    Threshold history: the original 78.0 was mis-calibrated. Measured on the
+    real corpus, CORRECT rows commonly score 62-64 against the extracted metric
+    phrase (e.g. "tra truoc cho nguoi ban" vs "2. Trả trước cho người bán ngắn
+    hạn"), so 78 silently rejected them.
+
+    Calibration on the offline eval suite (lookup class, coverage x accuracy):
+        threshold 78, no margin   -> 0.680
+        threshold 62, no margin   -> 0.720   <-- default
+        threshold 62, margin 8    -> 0.440
+        threshold 62, margin 15   -> 0.320
+    So the rule now ANSWERS whenever it clears 62 (refusing costs more than the
+    occasional wrong pick). Ambiguity is instead expressed through `confidence`:
+    a near-tie is capped below the `--rule-first` cut-off, so those questions
+    still go to the LLM, which can overwrite them using the shortlist.
+    Pass `unambiguous_margin > 0` only to force refusal (used for ablations).
+    """
     metric = route.get("metric_norm", "")
+    variants = [v for v in (route.get("metric_variants") or [metric]) if v]
     years = route.get("years") or []
     q_scale = float(route.get("unit_scale", 1.0))
     output_type = route.get("output_type") or (
         "percent" if route.get("is_percent") else "number"
     )
-    if output_type != "number" or route.get("growth") or not metric:
+    plan_op = (route.get("plan") or {}).get("op", "lookup")
+    if output_type not in ("number", "percent") or route.get("growth") or not variants:
         return RuleAnswer(ok=False, detail="needs multi-step reasoning -> LLM")
-    target_year = years[0] if years else None
-
-    best = None  # (score, var, label, col, value, unit_scale, exact_label)
-    for t in tables:
-        df = df_roundtrip(t["csv_text"])
-        if not len(df):
-            continue
-        report_year = t.get("report_year")
-        for label in df["label"].unique():
-            if not label or len(str(label)) < 4:
-                continue
-            s_lab = label_metric_score(str(label), metric)
-            if s_lab < min_label:
-                continue
-            sub = df[df["label"] == label]
-            # choose column
-            col_best = None  # (col_score, col, value, unit_scale)
-            for r in sub.itertuples():
-                cs = _year_col_score(r.col_name, target_year) if target_year else 0
-                if cs == 0 and target_year and report_year:
-                    # positional heuristic: first numeric col = report_year,
-                    # second = report_year - 1
-                    cols = sorted(sub["col"].unique())
-                    if target_year == report_year and r.col == cols[0]:
-                        cs = 1
-                    elif target_year == report_year - 1 and len(cols) > 1 and r.col == cols[1]:
-                        cs = 1
-                if col_best is None or cs > col_best[0]:
-                    col_best = (cs, int(r.col), float(r.value), float(r.unit_scale))
-            if col_best is None or (target_year and col_best[0] == 0):
-                continue
-            score = s_lab + 10 * col_best[0]
-            # prefer tables whose unit was detected confidently
-            if t.get("unit_source") in ("explicit", "header"):
-                score += 5
-            # magnitude sanity: a money line item asked in trieu/ty dong is
-            # almost never < 1e6 absolute VND -> likely a wrong-unit table
-            if q_scale >= 1e6 and abs(col_best[2] * col_best[3]) < 1e6:
-                score -= 25
-            if best is None or score > best[0]:
-                best = (score, t["var"], str(label), col_best[1], col_best[2],
-                        col_best[3], s_lab)
-    if best is None:
+    if plan_op != "lookup":
+        return RuleAnswer(ok=False, detail=f"composite op={plan_op} -> LLM")
+    # ONE scoring path. This used to re-implement its own label/column scoring,
+    # which disagreed with build_shortlist: a row the shortlist rated 78 (thanks
+    # to year + VAS-code evidence) could score ~56 here and be refused, leaving
+    # the question empty. Reusing the shortlist removes that whole class of
+    # silent misses and keeps rule + prompt looking at the same candidates.
+    cands = build_shortlist(tables, variants, years, top_n=6,
+                            min_score=min_label)
+    # magnitude sanity: a money figure asked in triệu/tỷ đồng is essentially
+    # never < 1e6 VND -> such a candidate points at a wrong-unit table
+    if q_scale >= 1e6:
+        keep = [c for c in cands if abs(c.value * c.unit_scale) >= 1e6]
+        cands = keep or cands
+    if not cands:
         return RuleAnswer(ok=False, detail="no confident label/column match")
 
-    _score, var, label, col, value, us, s_lab = best
-    answer = round(value * us / q_scale, 2)
-    frag = _distinct_fragment(label)
-    query = (f"round(float({var}.loc[{var}['label'].str.contains({frag!r}, case=False, "
-             f"regex=False, na=False) & ({var}['col'] == {col}), 'value'].iloc[0]) "
-             f"* {us:g} / {q_scale:g}, 2)")
+    best_c = cands[0]
+    runner_up = cands[1].score if len(cands) > 1 else 0.0
+    best = (best_c.score, best_c.var, best_c.label, best_c.col, best_c.value,
+            best_c.unit_scale, best_c.lexical, best_c.col_name)
+
+    _score, var, label, col, value, us, s_lab = best[:7]
+    col_name = best[7] if len(best) > 7 else ""
+    gap = _score - runner_up if runner_up > 0 else _score
+    ambiguous = gap < AMBIGUOUS_MARGIN
+    if unambiguous_margin and gap < unambiguous_margin:
+        return RuleAnswer(ok=False, confidence=_score,
+                          detail=f"ambiguous: best {_score:.0f} vs runner-up "
+                                 f"{runner_up:.0f} -> LLM picks from shortlist")
+
+    if output_type == "percent":
+        # ORGANIZER-CONFIRMED: percent answers are 90, not 0.9
+        answer = round(percent_from_cell(value, label, col_name), 2)
+        scale_expr = ("" if cell_is_already_percent(label, col_name, value)
+                      else " * 100")
+        query = (f"round(float({var}.loc[{var}['label'].str.contains("
+                 f"{_distinct_fragment(label)!r}, case=False, regex=False, na=False) "
+                 f"& ({var}['col'] == {col}), 'value'].iloc[0]){scale_expr}, 2)")
+    else:
+        answer = round(value * us / q_scale, 2)
+        query = (f"round(float({var}.loc[{var}['label'].str.contains("
+                 f"{_distinct_fragment(label)!r}, case=False, regex=False, na=False) "
+                 f"& ({var}['col'] == {col}), 'value'].iloc[0]) "
+                 f"* {us:g} / {q_scale:g}, 2)")
+    warn = check_answer_unit(answer, output_type)
+    # a near-tie stays answerable but must NOT be trusted enough for --rule-first
+    # to skip the LLM (the shortlist gives the model a real chance to do better)
+    conf = min(99.0, _score)
+    if ambiguous:
+        conf = min(conf, 60.0)
     return RuleAnswer(ok=True, answer=answer, pandas_query=query, var=var,
-                      confidence=min(99.0, _score), detail=f"label='{label}' fuzz={s_lab:.0f}")
+                      confidence=conf,
+                      detail=f"label='{label}' fuzz={s_lab:.0f} gap={gap:.0f}"
+                             + (" AMBIGUOUS" if ambiguous else "")
+                             + (f" | UNIT-WARN: {warn}" if warn else ""))
 
 
 def _distinct_fragment(label: str, max_len: int = 40) -> str:

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, asdict
 
 from ..extraction.build_store import Store
 from .entities import StockMap, parse_question, Parsed
+from .decompose import build_plan, evidence_budget
 
 
 @dataclass
@@ -20,6 +21,9 @@ class Route:
     output_type: str = "number"
     growth: bool = False
     metric_norm: str = ""
+    metric_variants: list[str] = field(default_factory=list)
+    plan: dict = field(default_factory=dict)     # decompose.Plan.to_dict()
+    evidence_budget: int = 0                     # dynamic k for this question
     report_ids: list[str] = field(default_factory=list)
     confidence: str = "high"           # high | medium | low
     notes: list[str] = field(default_factory=list)
@@ -33,7 +37,8 @@ def route_question(qid: int, question: str, stock: StockMap, store: Store) -> Ro
     r = Route(qid=qid, question=question, tickers=p.tickers, years=list(p.years),
               doc_type=p.doc_type, unit_scale=p.unit_scale, unit_name=p.unit_name,
               is_percent=p.is_percent, output_type=p.output_type,
-              growth=p.growth, metric_norm=p.metric_norm)
+              growth=p.growth, metric_norm=p.metric_norm,
+              metric_variants=list(p.metric_variants or [p.metric_norm]))
 
     if not p.tickers:
         r.confidence = "low"
@@ -52,7 +57,11 @@ def route_question(qid: int, question: str, stock: StockMap, store: Store) -> Ro
             r.years = [avail[-1]]
             r.notes.append("no year in question -> latest available")
             r.confidence = "low"
-    if r.growth and len(r.years) == 1:
+    # A prior year is implied ONLY when a single company is compared over time.
+    # "Doanh thu của A chênh lệch bao nhiêu so với B" (2 tickers, 1 year) must
+    # NOT gain a second year: that produced 4 facts instead of 2 and made every
+    # `difference` question unresolvable.
+    if r.growth and len(r.years) == 1 and len(r.tickers) <= 1:
         r.years.append(r.years[0] - 1)
         r.notes.append("growth question -> added prior year")
 
@@ -78,4 +87,21 @@ def route_question(qid: int, question: str, stock: StockMap, store: Store) -> Ro
     if not r.report_ids:
         r.confidence = "low"
         r.notes.append("no report locked")
+
+    # --- decomposition + dynamic evidence budget (P1.1 / P1.4) -------------
+    plan = build_plan(r.question, r.tickers, r.years, r.doc_type, r.metric_norm)
+    r.plan = plan.to_dict()
+    r.evidence_budget = evidence_budget(plan)
+    if plan.is_composite:
+        r.notes.append(f"composite op={plan.op} facts={len(plan.facts)} "
+                       f"budget={r.evidence_budget}")
+        # a composite question needs the reports of EVERY (entity, period) pair;
+        # blanket expansion failed on the leaderboard, targeted expansion is the
+        # supported alternative (see P1_STRATEGY_REVIEW.md §2)
+        for f in plan.facts:
+            if not f.ticker or f.year is None:
+                continue
+            for rid in store.find_reports(f.ticker, f.year, f.doc_type):
+                if rid not in r.report_ids:
+                    r.report_ids.append(rid)
     return r

@@ -32,7 +32,12 @@ def retrieve_for_route(route, store: Store, depth: int = RETRIEVE_DEPTH) -> list
         grids = [grid_of(m) for m in metas]
         docs = [table_doc_tokens(m, g) for m, g in zip(metas, grids)]
         bm25 = BM25(docs)
-        q_tokens = route.metric_norm.split() + [str(y) for y in route.years]
+        # query = every metric variant (extractive core + wide + legacy) so a
+        # short core phrase does not lose the qualifier tokens
+        q_tokens = []
+        for v in (getattr(route, "metric_variants", None) or [route.metric_norm]):
+            q_tokens.extend(str(v).split())
+        q_tokens.extend(str(y) for y in route.years)
         scores = bm25.scores(q_tokens)
         order = sorted(range(len(metas)), key=lambda i: -scores[i])[: max(depth * 3, 60)]
         for i in order:
@@ -57,7 +62,35 @@ def retrieve_for_route(route, store: Store, depth: int = RETRIEVE_DEPTH) -> list
                 "label_match": round(best_lab, 1),
             })
     cands.sort(key=lambda c: -c["score"])
-    return cands[:depth]
+    return _apply_quota(cands, route, depth)
+
+
+def _apply_quota(cands: list[dict], route, depth: int) -> list[dict]:
+    """Dynamic evidence allocation (P1.4).
+
+    A flat top-k starves composite questions: for "chênh lệch giữa A và B" a
+    pure score ranking can return 5 tables that all belong to A. Guarantee at
+    least `per_doc` slots for every locked report, then fill by score.
+    """
+    plan = getattr(route, "plan", None) or {}
+    facts = plan.get("facts", [])
+    if len(facts) <= 1 or not cands:
+        return cands[:depth]
+    docs = list(dict.fromkeys(c["report_id"] for c in cands))
+    per_doc = max(1, depth // max(1, len(docs)))
+    taken, out = {}, []
+    for c in cands:
+        if len(out) >= depth:
+            break
+        if taken.get(c["report_id"], 0) < per_doc:
+            out.append(c)
+            taken[c["report_id"]] = taken.get(c["report_id"], 0) + 1
+    for c in cands:                      # fill the remainder by pure score
+        if len(out) >= depth:
+            break
+        if c not in out:
+            out.append(c)
+    return out[:depth]
 
 
 def run_retrieval(questions_path: Path, store_dir: Path, code_stock_csv: Path,
