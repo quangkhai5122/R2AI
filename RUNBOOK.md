@@ -386,7 +386,7 @@ Mọi script đã gọi `setup_stdout()` (UTF-8). Nếu vẫn lỗi: `chcp 65001
 | 16 | Hybrid #15 + fallback #14 (35 câu) | .4334 | .8774 | **.1957** | .1957 |
 | 16.1 | Rule dynamic fact-aware | .4352 | .8805 | **.1522** | .1522 |
 | 16.2 | Rule k=4 pre-fact-aware | .4334 | .8774 | **.1482** | .1482 |
-| chờ | P2.1 Qwen 14B fact-aware, dynamic k | | | | |
+| 17 | P2.1 Qwen 14B fact-aware, dynamic k | .4406 | .8937 | **.2115** | .2115 |
 
 **#12: 183 final LLM / khoảng 166 placeholder được lấp → net chỉ ~+2 câu đúng.**
 Tỷ lệ marginal thô khoảng 1.1–1.2%, không phải 2%. Nguyên nhân đã audit:
