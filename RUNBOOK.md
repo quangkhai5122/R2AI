@@ -3,9 +3,9 @@
 > **File này là nguồn sự thật duy nhất về LỆNH CHẠY.** Mỗi khi pipeline đổi,
 > ghi đè trực tiếp vào đây (đừng tạo file mới) để không bị lạc phiên bản.
 >
-> Cập nhật lần cuối: **2026-08-04 (P2.0)** — thêm **`--llm-mode select`**:
-> model chỉ chọn dòng trong shortlist bằng JSON, ta sinh pandas. Xoá 3 lớp lỗi
-> đã audit ở lượt #12 (cột năm 35%, đơn vị 15%, regex 90% → **0%**).
+> Cập nhật lần cuối: **2026-08-08 (P2.1)** — thêm hybrid 14B→7B an toàn,
+> `selection_trace`, fact-aware shortlist và `--k 0` dùng evidence budget động.
+> Model vẫn chỉ chọn JSON; hệ thống giữ metadata ticker/report/year/fact và tự sinh pandas.
 
 ---
 
@@ -14,12 +14,13 @@
 | Thành phần | Phiên bản/giá trị đang dùng |
 |---|---|
 | `vifinqa` package | 0.2.0 |
-| Payload schema | 2 (có `payload-manifest.json`, SHA-256) |
+| Payload schema | **3** (P2.1 dynamic-k/fact-aware; có manifest SHA-256) |
 | `TABLE_POS_MODE` | `line` (BTC xác nhận: vị trí = **số dòng** của `<table>`) |
 | `SUBMISSION_K` | 5 |
 | Retrieval artifact chuẩn | `artifacts/retrieval.jsonl` (phải là bản **P1**) |
 | Codegen artifact chuẩn | `artifacts/codegen_results.jsonl` |
-| Điểm tốt nhất đã nộp | #8: TABLES_F2 .4241 / DOCS_F2 .8628 / ANSWER .1285 / EXEC .1285 |
+| Điểm tốt nhất đã nộp | #15 Selection 14B: TABLES_F2 .4334 / DOCS_F2 .8774 / ANSWER .1957 / EXEC .1957 |
+| Việc đang chờ điểm | hybrid #15 + fallback 7B; sau đó Qwen 14B P2.1 fact-aware |
 | Backend LLM Kaggle | `hf` (transformers). **vLLM không chạy trên T4** |
 
 **Kiểm tra nhanh trạng thái trước mỗi phiên làm việc:**
@@ -40,33 +41,42 @@ python -m pytest tests -q
 | Sửa file ở... | 01 store | 02 retrieve | 03 rule | 04+upload payload | chạy Kaggle |
 |---|:--:|:--:|:--:|:--:|:--:|
 | `extraction/`, `utils/viet_num.py` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `router/`, `retrieval/` | – | ✅ | ✅ | ✅ | ✅ |
+| `router/`, `retrieval/{retrieve,bm25}.py` | – | ✅ | ✅ | ✅ | ✅ |
+| `retrieval/shortlist.py` | – | – | ✅ | ✅ | ✅ |
 | `codegen/rule_*.py`, `units.py` | – | – | ✅ | ✅ | ✅ |
 | `codegen/prompts.py`, `selection.py`, `generate.py`, `llm_client.py` | – | – | – | ✅ | ✅ |
 | `submission/build.py`, `scripts/05` | – | – | – | – | – |
+| `codegen/hybrid.py`, `scripts/11_merge_codegen_hybrid.py` | – | – | – | – | – |
 | chỉ `tests/`, `*.md` | – | – | – | – | – |
 
 Payload luôn phải dựng lại khi **bất kỳ** file nào trong `vifinqa/` hoặc
 `kaggle/kaggle_codegen.py` đổi, vì manifest băm SHA-256 toàn bộ code.
 
-### Riêng bản P2.0 (`--llm-mode select`) — đang ở trạng thái này
+### Riêng bản P2.1 fact-aware — đang ở trạng thái này
 
-Chỉ đụng `codegen/{selection,prompts,generate}.py` + `kaggle_codegen.py`.
-Đã kiểm chứng: rule baseline trước/sau **giống hệt 150/150 bản ghi**.
+Đổi `retrieval/shortlist.py`, `codegen/{prompts,generate}.py`, runner và notebook.
+Không cần build lại store/retrieval. Phải chạy test, dựng lại payload và upload version mới.
 
 ```powershell
-# BỎ QUA 01, 02, 03 — store, retrieval.jsonl, codegen_results.jsonl vẫn dùng được
+# BỎ QUA 01, 02 — store và retrieval.jsonl hiện tại vẫn dùng được
+python scripts/03_rule_baseline.py --retrieval artifacts/retrieval.jsonl --k 4 --out artifacts/codegen_rule_k4_pre_factaware.jsonl
+python -m pytest tests -q
 python scripts/04_make_kaggle_payload.py --dataset-id <user1>/vifinqa-payload
-kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip -m "P2.0 selection mode"
+kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip -m "P2.1 fact-aware selection trace dynamic-k"
 
 # acc #2
 $env:KAGGLE_CONFIG_DIR = "D:\kaggle_acc2"
 python scripts/04_make_kaggle_payload.py --dataset-id <user2>/vifinqa-payload
-kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip -m "P2.0 selection mode"
+kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip -m "P2.1 fact-aware selection trace dynamic-k"
 Remove-Item Env:\KAGGLE_CONFIG_DIR
 ```
 
-Rồi chạy notebook theo §7bis với `--llm-mode select`.
+Rồi chạy notebook/command 14B chính xác ở §7bis. Không dùng lại output #15 vì code/prompt/k
+đã đổi nên `run_signature` phải khác.
+
+Payload local đã rebuild và verify ngày 2026-08-08: schema 3, **245 files**, khoảng
+101 MB, manifest digest `edd32a94cfa05358`. Dataset ID hiện tại:
+`lequangkhai5122005/vifinqa-payload`. Việc còn lại là upload một version mới.
 
 ## 1. Cài đặt (một lần)
 
@@ -116,6 +126,39 @@ Kỳ vọng hiện tại: có cả `rule` (lookup) lẫn `rule_composite`
 Nếu thấy `rule_composite 0` trên toàn bộ 1.012 câu ⇒ retrieval là bản cũ
 (thiếu `plan`), quay lại §2.2.
 
+#### Control bắt buộc cùng `k=4` với các lượt Qwen #12–#15
+
+Control này không ghi đè baseline `k=6` và không cần GPU:
+
+```powershell
+python scripts/03_rule_baseline.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --k 4 `
+  --out artifacts/codegen_rule_k4_pre_factaware.jsonl
+
+python scripts/05_build_submission.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/codegen_rule_k4_pre_factaware.jsonl `
+  --out-dir artifacts/submission_rule_k4_pre_factaware `
+  --sub-k 5
+```
+
+Artifact đã dựng ngày 2026-08-08 phải có đúng:
+`rule=323`, `rule_composite=103`, `none=586`, tổng 1.012; build/replay phải thành công.
+Đây là **pre-fact-aware control**. Không tái tạo file này sau khi đổi code rồi gọi nó là
+cùng control.
+
+Control CPU của code P2.1 với budget động (`--k 0`) dùng để tách phần rule/context khỏi
+phần Qwen:
+
+```powershell
+python scripts/03_rule_baseline.py --retrieval artifacts/retrieval.jsonl --k 0 --out artifacts/codegen_rule_dynamic_factaware.jsonl
+python scripts/05_build_submission.py --retrieval artifacts/retrieval.jsonl --codegen artifacts/codegen_rule_dynamic_factaware.jsonl --out-dir artifacts/submission_rule_dynamic_factaware --sub-k 5
+```
+
+Kết quả local đã kiểm chứng: `rule=324`, `rule_composite=129`, `none=559`; 1.012 query
+eval-compilable, 1.116 CSV. Chỉ nộp control này nếu còn slot và cần attribution riêng.
+
 ### 2.4 Build submission
 
 ```powershell
@@ -138,6 +181,38 @@ python scripts/05_build_submission.py ... --questions <duong_dan>\questions.json
 ```
 
 **KHÔNG dùng `--expand-docs`** — đã kiểm chứng làm sập DOCS_F2 (.84 → .61).
+
+### 2.5 Hybrid #15 (14B primary) + #14 (7B fallback) — không cần GPU
+
+Policy chỉ thay một record 14B khi nó là placeholder cấu trúc đầy đủ:
+`source=none`, `status=failed`, answer 0 và query hằng `0.0`. Một query hợp lệ tính ra
+answer 0 **không** bị coi là rỗng. Script fail-fast nếu ID, question hoặc run signature
+không nhất quán.
+
+```powershell
+python scripts/11_merge_codegen_hybrid.py `
+  --primary artifacts/submission_sel14b/codegen_sel14b.jsonl `
+  --fallback artifacts/submission_sel7b/codegen_sel7b.jsonl `
+  --out artifacts/codegen_hybrid_sel14b_sel7b.jsonl `
+  --audit artifacts/codegen_hybrid_sel14b_sel7b.audit.json
+
+python scripts/05_build_submission.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/codegen_hybrid_sel14b_sel7b.jsonl `
+  --out-dir artifacts/submission_hybrid_sel14b_sel7b `
+  --sub-k 5
+```
+
+Kết quả đã kiểm chứng trên artifact hiện có:
+
+- giữ primary 14B: **702**;
+- lấy fallback 7B: **35**;
+- vẫn unresolved: **275**;
+- hybrid signature bắt đầu bằng `43126dbdef3a2c51`;
+- submission: 1.012 entries, 1.349 CSV, replay thành công.
+
+File nộp ngay: `artifacts\submission_hybrid_sel14b_sel7b\submission.zip`.
+Không chạy hybrid output như checkpoint Kaggle; nó chỉ dùng để build submission.
 
 ---
 
@@ -226,17 +301,19 @@ type artifacts\kaggle_payload\dataset-metadata.json
 Notebook: `kaggle/vifinqa-codegen.ipynb` → File → Import Notebook.
 Settings: **GPU T4 x2**, **Internet On**, Add Input = dataset payload (chỉ MỘT bản).
 
-Log đúng phải có: `payload verified: schema=2` → `run signature: ...` →
+Log đúng phải có: `payload verified: schema=3` → `run signature: ...` →
 `baseline written (...)` → `LLM queue: ...` → `[chunk 1/N] ...`
 
-Cấu hình đang khuyến nghị (7B, 4-bit):
+Cấu hình đang khuyến nghị: **P2.1 Qwen 14B fact-aware Selection**. `--k 0` kích hoạt
+`route.evidence_budget` động (4–12 table), không phải k=0 table.
 
 ```
 !python /kaggle/working/code/kaggle_codegen.py --payload $PAYLOAD --backend hf \
-    --model Qwen/Qwen2.5-Coder-7B-Instruct --load-4bit \
-    --out /kaggle/working/codegen_results.jsonl \
-    --n 1 --k 4 --max-tokens 256 --batch-size 4 \
-    --checkpoint-every 32 --time-budget-min 400
+    --model Qwen/Qwen2.5-Coder-14B-Instruct --load-4bit \
+    --llm-mode select --llm-target all \
+    --out /kaggle/working/codegen_sel14b_factaware.jsonl \
+    --n 1 --temperature 0.7 --k 0 --max-tokens 96 --batch-size 4 \
+    --checkpoint-every 32 --time-budget-min 400 --seed 13
 ```
 
 Biến thể:
@@ -244,15 +321,15 @@ Biến thể:
 | Mục đích | Thêm/đổi cờ |
 |---|---|
 | Bật semantic matching | `--use-dense` (cần `pip install -q sentence-transformers` + `store/label_index/`) |
-| Model 14B | `--model Qwen/Qwen2.5-Coder-14B-Instruct --load-4bit --batch-size 2` |
+| Smoke bắt buộc | thêm `--limit 12 --checkpoint-every 4 --time-budget-min 30 --no-resume`, đổi `--out` sang `codegen_sel14b_factaware_smoke.jsonl` |
 | Bỏ qua câu rule đã chắc | `--rule-first` |
-| Chạy tiếp phiên trước | đặt file cũ vào `/kaggle/working/codegen_results.jsonl`, giữ NGUYÊN mọi cờ (khác cờ ⇒ `run_signature` khác ⇒ không resume) |
-| OOM | `--batch-size 2`, `--k 3`, `--max-tokens 192` |
+| Chạy tiếp phiên trước | đặt checkpoint vào đúng `/kaggle/working/codegen_sel14b_factaware.jsonl`, giữ NGUYÊN mọi cờ |
+| OOM | trước hết đổi `--batch-size 2`; chỉ khi vẫn lỗi mới đổi `--k 8` (sẽ tạo signature mới) |
 
-Tải `codegen_results.jsonl` từ tab Output → về local:
+Tải `codegen_sel14b_factaware.jsonl` từ tab Output → về local:
 
 ```powershell
-python scripts/05_build_submission.py --retrieval artifacts/retrieval.jsonl --codegen <duong_dan>\codegen_results.jsonl --out-dir artifacts/submission_qwen
+python scripts/05_build_submission.py --retrieval artifacts/retrieval.jsonl --codegen <duong_dan>\codegen_sel14b_factaware.jsonl --out-dir artifacts/submission_sel14b_factaware --sub-k 5
 ```
 
 ### 5.2 Embed label index (encode-only, ~15 phút)
@@ -303,9 +380,16 @@ Mọi script đã gọi `setup_stdout()` (UTF-8). Nếu vẫn lỗi: `chcp 65001
 | 10 | **P1.5 rule composite** | **.4337** | **.8777** | **.1542** | **.1542** |
 | 11 | P1.6 hợp nhất scoring | .4337 | .8777 | .1522 | .1522 |
 | 12 | Qwen 7B `--llm-target empty` | .4334 | .8774 | **.1561** | .1561 |
-| _ | _(điền lần nộp tiếp theo)_ | | | | |
+| 13 | Qwen 7B `--llm-target weak` | .4334 | .8774 | **.1443** | .1443 |
+| 14 | Qwen 7B Selection structure | .4334 | .8774 | **.1838** | .1838 |
+| 15 | Qwen 14B Selection structure | .4334 | .8774 | **.1957** | .1957 |
+| 16 | Hybrid #15 + fallback #14 (35 câu) | .4334 | .8774 | **.1957** | .1957 |
+| 16.1 | Rule dynamic fact-aware | .4352 | .8805 | **.1522** | .1522 |
+| 16.2 | Rule k=4 pre-fact-aware | .4334 | .8774 | **.1482** | .1482 |
+| chờ | P2.1 Qwen 14B fact-aware, dynamic k | | | | |
 
-**#12: 175 đáp án LLM mới → chỉ ~+2 câu đúng (≈2%).** Nguyên nhân đã audit:
+**#12: 183 final LLM / khoảng 166 placeholder được lấp → net chỉ ~+2 câu đúng.**
+Tỷ lệ marginal thô khoảng 1.1–1.2%, không phải 2%. Nguyên nhân đã audit:
 35% query không lọc cột năm, 15% quên chia ANSWER_SCALE, 90% thiếu `regex=False`.
 Chi tiết + hướng sửa: `CLAUDE.md` mục "CHẨN ĐOÁN LƯỢT QWEN #12".
 
@@ -313,82 +397,67 @@ Chi tiết + hướng sửa: `CLAUDE.md` mục "CHẨN ĐOÁN LƯỢT QWEN #12".
 đúng. Eval dự báo lookup +0.10 nhưng thực tế ≈ 0 ⇒ **lần thứ hai eval dự báo sai**.
 Rule đã tới điểm lợi tức giảm dần: P1.5 +0.026, P1.6 −0.002.
 
-## 7bis. Chạy Qwen song song 2 acc (giai đoạn hiện tại)
+## 7bis. P2.1 — chạy lại Qwen 14B fact-aware (giai đoạn hiện tại)
 
-Điều kiện: đã chạy §2.2 + §2.3 với code P1.6 và rebuild payload (§4).
+Mục tiêu là so với #15 nhưng sửa giao diện evidence: dùng budget động, shortlist theo
+F-slot, hiện ticker/report/year, giữ riêng từng cột năm và ghi rejection taxonomy.
 
-| | Acc #1 | Acc #2 |
+| Cờ | #15 control | P2.1 mới |
 |---|---|---|
-| Notebook | `vifinqa-codegen.ipynb` | `vifinqa-codegen.ipynb` |
-| Model | `Qwen/Qwen2.5-Coder-7B-Instruct --load-4bit` | `Qwen/Qwen2.5-Coder-14B-Instruct --load-4bit --batch-size 2` |
-| Out | `codegen_qwen7b.jsonl` | `codegen_qwen14b.jsonl` |
-| Khác nhau đúng 1 biến | kích thước model | |
+| model | Qwen2.5-Coder-14B-Instruct NF4 | giữ nguyên |
+| mode/target | `select` / `all` | giữ nguyên |
+| n / temperature / seed | 1 / 0.7 / 13 | giữ nguyên |
+| table context | fixed `--k 4` | **`--k 0` = route budget 4–12** |
+| shortlist | global, một cột/label | fact-aware, multi-year, có provenance |
+| output | `codegen_sel14b.jsonl` | `codegen_sel14b_factaware.jsonl` |
 
-**`--llm-target` quyết định GPU tiêu vào đâu** (đo trên artifact hiện tại):
+### Bước A — smoke bắt buộc
 
-| target | số câu | ước tính 7B | ghi chú |
-|---|---:|---:|---|
-| `all` | 1012 | ~5.0h | phủ hết, nhưng phần lớn rule đã trả lời đúng |
-| `weak` | 787 | ~3.9h | rỗng + rule confidence < 78 |
-| **`empty`** | **569** | **~2.8h** | **ROI cao nhất**: chỉ câu rule bó tay |
-
-Arbitration giữ đáp án rule khi bất đồng mà rule tự tin, nên chạy `all` phần lớn
-là tiêu GPU vào việc xác nhận lại thứ đã đúng.
-
-### `--llm-mode select` — DÙNG CÁI NÀY từ nay
-
-Sau lượt #12 (model tự viết pandas): 35% query không lọc cột năm, 15% quên chia
-`ANSWER_SCALE`, 90% thiếu `regex=False` → 175 đáp án mới chỉ ra ~2 câu đúng.
-
-Ở `--llm-mode select`, model **chỉ xuất JSON** `{"op":..., "operands":[...]}`
-chọn dòng trong shortlist; **ta** sinh biểu thức pandas với cột và đơn vị đúng.
-Mô phỏng end-to-end: query thiếu `regex=False` **0%**, query không lọc cột **0%**.
-Output ~30 token thay vì 256 → nhanh hơn nhiều, chạy được `--llm-target all`.
-
-```
-# ACC #1 — 7B, selection mode, TOÀN BỘ câu (arbitration mới có việc để làm)
-!python /kaggle/working/code/kaggle_codegen.py --payload $PAYLOAD --backend hf \
-    --model Qwen/Qwen2.5-Coder-7B-Instruct --load-4bit \
-    --llm-mode select --llm-target all \
-    --out /kaggle/working/codegen_sel7b.jsonl \
-    --n 1 --k 4 --max-tokens 96 --batch-size 8 \
-    --checkpoint-every 32 --time-budget-min 400
-
-# ACC #2 — 14B, khác đúng MỘT biến (kích thước model)
+```text
 !python /kaggle/working/code/kaggle_codegen.py --payload $PAYLOAD --backend hf \
     --model Qwen/Qwen2.5-Coder-14B-Instruct --load-4bit \
     --llm-mode select --llm-target all \
-    --out /kaggle/working/codegen_sel14b.jsonl \
-    --n 1 --k 4 --max-tokens 96 --batch-size 4 \
-    --checkpoint-every 32 --time-budget-min 400
+    --out /kaggle/working/codegen_sel14b_factaware_smoke.jsonl --limit 12 \
+    --n 1 --temperature 0.7 --k 0 --max-tokens 96 --batch-size 4 \
+    --checkpoint-every 4 --time-budget-min 30 --seed 13 --no-resume
 ```
 
-`--max-tokens 96` là đủ cho một object JSON; `--batch-size` tăng được vì output ngắn.
+Log phải có `payload verified`, `run signature`, `baseline written`, `LLM queue` và
+`[chunk ...]`. QA smoke phải có 12 ID duy nhất, finite answer và `selection_trace`.
 
-Chế độ cũ `--llm-mode code` vẫn giữ để đối chứng, nhưng không khuyến nghị.
+### Bước B — full run 14B
 
-Nếu phiên còn dư thời gian sau khi xong `empty`: chạy lại **cùng lệnh** đổi
-`--llm-target weak` — resume sẽ giữ nguyên phần đã làm và chỉ bổ sung phần yếu.
+```text
+!python /kaggle/working/code/kaggle_codegen.py --payload $PAYLOAD --backend hf \
+    --model Qwen/Qwen2.5-Coder-14B-Instruct --load-4bit \
+    --llm-mode select --llm-target all \
+    --out /kaggle/working/codegen_sel14b_factaware.jsonl \
+    --n 1 --temperature 0.7 --k 0 --max-tokens 96 --batch-size 4 \
+    --checkpoint-every 32 --time-budget-min 400 --seed 13
+```
 
-Về local, mỗi file build một submission riêng rồi so:
+Không đổi tên output/cờ khi resume. Không copy artifact #15 cũ vào output này vì signature
+và prompt khác. Nếu OOM, runner tự hạ batch; chỉ sửa tay thành `--batch-size 2` nếu cần.
+
+### Bước C — QA artifact sau khi download
 
 ```powershell
-python scripts/05_build_submission.py --retrieval artifacts/retrieval.jsonl --codegen <path>\codegen_qwen7b.jsonl  --out-dir artifacts/submission_q7
-python scripts/05_build_submission.py --retrieval artifacts/retrieval.jsonl --codegen <path>\codegen_qwen14b.jsonl --out-dir artifacts/submission_q14
+python -c "import json,math;from collections import Counter;p=r'<path>\codegen_sel14b_factaware.jsonl';r=[json.loads(x) for x in open(p,encoding='utf-8')];ids=[x['id'] for x in r];print('rows/unique',len(r),len(set(ids)));print('source',Counter(x['source'] for x in r));print('outcome',Counter((x.get('selection_trace') or {}).get('outcome','not_run') for x in r));print('reject',Counter(k for x in r for k,n in ((x.get('selection_trace') or {}).get('rejection_counts') or {}).items() for _ in range(n)));assert len(r)==1012 and len(set(ids))==1012 and all(math.isfinite(float(x['answer'])) for x in r)"
+
+python scripts/05_build_submission.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen <path>\codegen_sel14b_factaware.jsonl `
+  --out-dir artifacts/submission_sel14b_factaware `
+  --sub-k 5
 ```
 
-Kiểm nhanh Qwen có thực sự thêm giá trị (trước khi tốn lượt nộp):
+Nộp `artifacts\submission_sel14b_factaware\submission.zip`. Sau khi có điểm, thêm một
+dòng mới vào bảng §7; không ghi đè điểm #15 hoặc artifact hybrid.
 
-```powershell
-python -c "import json;from collections import Counter;r=[json.loads(l) for l in open(r'<path>\codegen_qwen7b.jsonl',encoding='utf-8')];print(Counter(x['source'] for x in r));print('arbitration:',Counter((x.get('arbitration') or {}).get('reason','n/a') for x in r))"
-```
-
-Đọc kết quả: `rule and llm agree` nhiều = tín hiệu tốt; `disagree; rule weak -> llm`
-là phần LLM thực sự đóng góp; `source=none` còn nhiều = LLM cũng bó tay.
-
-Ở lượt #12 toàn bộ 183 bản ghi đều là `rule produced nothing` — vì
-`--llm-target empty` khiến LLM chỉ thấy câu rule bó tay nên **arbitration chưa
-từng chạy**. Với `--llm-target all` sẽ thấy đủ 4 nhóm lý do.
+`selection_trace` schema v1 lưu raw response đã sanitize/cắt tối đa 2.000 ký tự kèm
+SHA-256. Các reason chính: `parse_error`, `model_none`, `invalid_selection`,
+`synthesis_error`, `execution_failed`, `semantic_validation_failed`, `answer_mismatch`.
+Trace chỉ là metadata audit, không làm thay đổi answer/query/arbitration.
 
 ## 8. Hiệu chuẩn eval offline ↔ leaderboard (QUAN TRỌNG)
 

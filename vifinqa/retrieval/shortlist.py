@@ -37,6 +37,15 @@ class Candidate:
     score: float
     lexical: float
     semantic: float
+    # Provenance shown to the selection model. ``fact_slot`` is empty for the
+    # legacy/global shortlist and F1/F2/... for a fact-aware shortlist.
+    ticker: str = ""
+    report_year: int | None = None
+    fact_slot: str = ""
+    fact_ticker: str = ""
+    fact_year: int | None = None
+    fact_metric: str = ""
+    fact_role: str = "value"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -44,7 +53,56 @@ class Candidate:
 
 def build_shortlist(tables: list[dict], metric_variants: list[str],
                     years: list[int] | None = None, top_n: int = 8,
-                    encoder=None, min_score: float = 35.0) -> list[Candidate]:
+                    encoder=None, min_score: float = 35.0,
+                    facts: list[dict] | None = None) -> list[Candidate]:
+    """Build a global or fact-aware shortlist of concrete table cells.
+
+    ``facts`` activates per-(ticker, year, metric) groups. Each non-empty fact
+    gets a fair share of the prompt budget, so a high-scoring company/report
+    cannot starve the other operands of a composite question. The legacy call
+    shape remains valid and preserves its ranking for zero/one requested year.
+    """
+    facts = [f for f in (facts or []) if isinstance(f, dict)]
+    requested_years = list(dict.fromkeys(years or []))
+    if not facts and len(requested_years) <= 1:
+        cands = _build_shortlist_legacy(
+            tables, metric_variants, requested_years, top_n, encoder, min_score,
+        )
+        return _attach_metadata(cands, tables)
+
+    groups: list[list[Candidate]] = []
+    if facts:
+        for idx, fact in enumerate(facts, 1):
+            scoped = _tables_for_fact(tables, fact)
+            variants = _variants_for_fact(fact, metric_variants)
+            fact_year = _as_year(fact.get("year"))
+            group = _build_shortlist_legacy(
+                scoped, variants, [fact_year] if fact_year is not None else [],
+                top_n, encoder, min_score,
+            )
+            groups.append(_attach_metadata(
+                group, scoped, fact=fact, fact_slot=f"F{idx}",
+            ))
+    else:
+        # Preserve a separate candidate for each requested period even if both
+        # values are columns in the same physical table.
+        for idx, year in enumerate(requested_years, 1):
+            group = _build_shortlist_legacy(
+                tables, metric_variants, [year], top_n, encoder, min_score,
+            )
+            groups.append(_attach_metadata(
+                group, tables, fact={"year": year}, fact_slot=f"Y{idx}",
+            ))
+
+    # Grow beyond the historical 12 candidates only when necessary to avoid
+    # silently omitting entire fact groups; still bound prompt size at 24.
+    effective_n = max(top_n, min(len(groups), 24))
+    return _allocate_per_fact(groups, effective_n)
+
+
+def _build_shortlist_legacy(tables: list[dict], metric_variants: list[str],
+                            years: list[int] | None = None, top_n: int = 8,
+                            encoder=None, min_score: float = 35.0) -> list[Candidate]:
     """tables: bundle tables ({var, report_id, table_pos, csv_text, ...}).
 
     Returns the best `top_n` (label, column) cells across all tables, sorted by
@@ -121,6 +179,96 @@ def _dedupe(cands: list[Candidate]) -> list[Candidate]:
         seen.add(key)
         out.append(c)
     return out
+
+
+def _attach_metadata(cands: list[Candidate], tables: list[dict],
+                     fact: dict | None = None,
+                     fact_slot: str = "") -> list[Candidate]:
+    """Attach provenance that used to be lost before rendering the prompt."""
+    by_key = {
+        (str(t.get("report_id", "")), int(t.get("table_pos", -1)),
+         str(t.get("var", ""))): t
+        for t in tables
+    }
+    for cand in cands:
+        table = by_key.get((cand.report_id, cand.table_pos, cand.var), {})
+        cand.ticker = str(table.get("ticker") or
+                          _ticker_from_report(cand.report_id))
+        cand.report_year = _as_year(table.get("report_year"))
+        cand.fact_slot = fact_slot
+        cand.fact_ticker = str((fact or {}).get("ticker") or "")
+        cand.fact_year = _as_year((fact or {}).get("year"))
+        cand.fact_metric = str((fact or {}).get("metric") or "")
+        cand.fact_role = str((fact or {}).get("role") or "value")
+    return cands
+
+
+def _tables_for_fact(tables: list[dict], fact: dict) -> list[dict]:
+    ticker = str(fact.get("ticker") or "").upper()
+    year = _as_year(fact.get("year"))
+    out = []
+    for table in tables:
+        table_ticker = str(table.get("ticker") or
+                           _ticker_from_report(table.get("report_id", ""))).upper()
+        if ticker and table_ticker != ticker:
+            continue
+        report_year = _as_year(table.get("report_year"))
+        # A FY-Y value can be the current column of report Y or the comparison
+        # column of report Y+1.
+        if year is not None and report_year is not None \
+                and report_year not in (year, year + 1):
+            continue
+        out.append(table)
+    return out
+
+
+def _variants_for_fact(fact: dict, global_variants: list[str]) -> list[str]:
+    metric = str(fact.get("metric") or "").strip()
+    variants = [str(v) for v in global_variants if v]
+    if not metric:
+        return variants
+    # Ratio/margin plans split the original phrase into two different metrics;
+    # do not contaminate each fact with the combined numerator/denominator text.
+    if any(norm(metric) == norm(v) for v in variants):
+        return list(dict.fromkeys([metric, *variants]))
+    return [metric]
+
+
+def _allocate_per_fact(groups: list[list[Candidate]], top_n: int) -> list[Candidate]:
+    """Reserve an even quota for each non-empty fact, then fill by score."""
+    nonempty = [(idx, group) for idx, group in enumerate(groups) if group]
+    if not nonempty or top_n <= 0:
+        return []
+    quota = max(1, top_n // len(nonempty))
+    chosen: list[Candidate] = []
+    chosen_ids = set()
+    group_of = {}
+    for idx, group in nonempty:
+        for cand in group:
+            group_of[id(cand)] = idx
+        for cand in group[:quota]:
+            chosen.append(cand)
+            chosen_ids.add(id(cand))
+    remaining = sorted(
+        (cand for _idx, group in nonempty for cand in group
+         if id(cand) not in chosen_ids),
+        key=lambda c: -c.score,
+    )
+    chosen.extend(remaining[:max(0, top_n - len(chosen))])
+    chosen.sort(key=lambda c: (group_of[id(c)], -c.score))
+    return chosen[:top_n]
+
+
+def _ticker_from_report(report_id: str) -> str:
+    return str(report_id or "").split("_", 1)[0]
+
+
+def _as_year(value) -> int | None:
+    try:
+        year = int(value)
+    except (TypeError, ValueError):
+        return None
+    return year if 1900 <= year <= 2100 else None
 
 
 def _extra_token_penalty(label: str, metric_variants: list[str],
@@ -241,8 +389,15 @@ def render_shortlist(cands: list[Candidate], unit_name: str = "") -> str:
     """Compact text block for the prompt."""
     if not cands:
         return "(no candidate row matched the metric — search the tables yourself)"
-    lines = ["idx | var | label | code | col | col_name | value | unit_scale"]
+    lines = [
+        "idx | fact | ticker | report_year | report_id | var | label | code | "
+        "col | col_name | value | unit_scale"
+    ]
     for i, c in enumerate(cands, 1):
-        lines.append(f"{i} | {c.var} | {c.label[:60]} | {c.code or '-'} | {c.col} | "
-                     f"{c.col_name[:22] or '-'} | {c.value:g} | {c.unit_scale:g}")
+        lines.append(
+            f"{i} | {c.fact_slot or '-'} | {c.ticker or '-'} | "
+            f"{c.report_year or '-'} | {c.report_id} | {c.var} | "
+            f"{c.label[:60]} | {c.code or '-'} | {c.col} | "
+            f"{c.col_name[:22] or '-'} | {c.value:g} | {c.unit_scale:g}"
+        )
     return "\n".join(lines)

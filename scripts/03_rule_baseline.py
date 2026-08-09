@@ -24,9 +24,14 @@ def main():
     ap.add_argument("--retrieval", default=str(config.RETRIEVAL_JSONL))
     ap.add_argument("--store-dir", default=str(config.STORE_DIR))
     ap.add_argument("--out", default=str(config.CODEGEN_JSONL))
-    ap.add_argument("--k", type=int, default=config.CODEGEN_K)
+    ap.add_argument(
+        "--k", type=int, default=config.CODEGEN_K,
+        help="fixed table cap; 0 uses route.evidence_budget",
+    )
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
+    if args.k < 0:
+        ap.error("--k must be >= 0 (use 0 for dynamic evidence_budget)")
 
     run_codegen(Path(args.retrieval), Path(args.store_dir), Path(args.out),
                 client=NoLLM(), k=args.k, limit=args.limit,

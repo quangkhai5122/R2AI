@@ -23,7 +23,7 @@ import random
 import sys
 from pathlib import Path
 
-PAYLOAD_SCHEMA_VERSION = 2
+PAYLOAD_SCHEMA_VERSION = 3
 MANIFEST_NAME = "payload-manifest.json"
 
 
@@ -63,6 +63,8 @@ def verify_payload(payload: Path, runtime_code_dir: Path | None = None) -> tuple
         "code/vifinqa/codegen/llm_client.py",
         "code/vifinqa/codegen/prompts.py",
         "code/vifinqa/codegen/executor.py",
+        "code/vifinqa/codegen/selection.py",
+        "code/vifinqa/retrieval/shortlist.py",
     }
     missing_manifest = sorted(required - set(files))
     if missing_manifest:
@@ -135,7 +137,11 @@ def main():
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--max-tokens", type=int, default=512)
     ap.add_argument("--debug-rounds", type=int, default=1)
-    ap.add_argument("--k", type=int, default=6, help="tables shown to the LLM")
+    ap.add_argument(
+        "--k", type=int, default=6,
+        help=("tables shown to the LLM; 0 uses each route's dynamic "
+              "evidence_budget (recommended for fact-aware selection)"),
+    )
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--use-dense", action="store_true",
                     help="BGE-M3 row matching (needs store/label_index + sentence-transformers)")
@@ -159,7 +165,7 @@ def main():
     # hf backend
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--load-4bit", action="store_true",
-                    help="bitsandbytes NF4 (for non-AWQ models like the 7B fp16)")
+                    help="bitsandbytes NF4 for non-AWQ Hugging Face checkpoints")
     ap.add_argument("--max-input-tokens", type=int, default=5000)
     # vllm backend
     ap.add_argument("--quantization", default="awq")
@@ -168,6 +174,8 @@ def main():
     ap.add_argument("--gpu-mem", type=float, default=0.92)
     ap.add_argument("--enforce-eager", action="store_true")
     args = ap.parse_args()
+    if args.k < 0:
+        ap.error("--k must be >= 0 (use 0 for dynamic evidence_budget)")
 
     payload = Path(args.payload)
     # import the vifinqa package sitting NEXT TO this script

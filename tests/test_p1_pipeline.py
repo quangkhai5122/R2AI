@@ -5,6 +5,7 @@ import unittest
 import pandas as pd
 
 from vifinqa.codegen.formulas import REGISTRY, describe_for_prompt, get
+from vifinqa.codegen.generate import _effective_table_k
 from vifinqa.codegen.units import (check_answer_unit, cell_is_already_percent,
                                    percent_from_cell)
 from vifinqa.retrieval.shortlist import build_shortlist, render_shortlist
@@ -129,6 +130,64 @@ class ShortlistTests(unittest.TestCase):
         self.assertIn("no candidate row", render_shortlist([]))
         self.assertIn("df1", render_shortlist(
             build_shortlist(self.tables, ["tra truoc cho nguoi ban"], [2024])))
+
+    def test_fact_aware_shortlist_keeps_both_year_columns_with_provenance(self):
+        rows = [
+            {"row": 1, "label": "Doanh thu thuần", "code": "10", "col": 1,
+             "col_name": "31/12/2024", "value": 120.0, "unit_scale": 1e6},
+            {"row": 1, "label": "Doanh thu thuần", "code": "10", "col": 2,
+             "col_name": "31/12/2023", "value": 100.0, "unit_scale": 1e6},
+        ]
+        tables = [{
+            "var": "df1", "ticker": "AAA",
+            "report_id": "AAA_financial_statements_2024_consolidated",
+            "report_year": 2024, "table_pos": 3,
+            "csv_text": pd.DataFrame(rows).to_csv(index=False),
+        }]
+        facts = [
+            {"ticker": "AAA", "year": 2024, "metric": "doanh thu thuan",
+             "role": "end"},
+            {"ticker": "AAA", "year": 2023, "metric": "doanh thu thuan",
+             "role": "base"},
+        ]
+        cands = build_shortlist(
+            tables, ["doanh thu thuan"], [2024, 2023], top_n=2, facts=facts,
+        )
+        self.assertEqual({c.fact_slot for c in cands}, {"F1", "F2"})
+        self.assertEqual({c.col_name for c in cands}, {"31/12/2024", "31/12/2023"})
+        self.assertTrue(all(c.ticker == "AAA" and c.report_year == 2024
+                            for c in cands))
+        rendered = render_shortlist(cands)
+        self.assertIn("ticker | report_year | report_id", rendered)
+        self.assertIn("AAA_financial_statements_2024_consolidated", rendered)
+
+    def test_fact_groups_prevent_one_company_from_starving_another(self):
+        def table(ticker, label, value):
+            rows = [{"row": 1, "label": label, "code": "10", "col": 1,
+                     "col_name": "2024", "value": value, "unit_scale": 1e6}]
+            return {"var": f"df{1 if ticker == 'AAA' else 2}", "ticker": ticker,
+                    "report_id": f"{ticker}_financial_statements_2024_consolidated",
+                    "report_year": 2024, "table_pos": 1,
+                    "csv_text": pd.DataFrame(rows).to_csv(index=False)}
+
+        tables = [table("AAA", "Doanh thu thuần", 200.0),
+                  table("BBB", "Doanh thu bán hàng", 100.0)]
+        facts = [{"ticker": t, "year": 2024, "metric": "doanh thu",
+                  "role": "value"} for t in ("AAA", "BBB")]
+        cands = build_shortlist(tables, ["doanh thu"], [2024], top_n=2,
+                                facts=facts)
+        self.assertEqual({c.fact_ticker for c in cands}, {"AAA", "BBB"})
+
+
+class DynamicEvidencePolicyTests(unittest.TestCase):
+    def test_zero_uses_route_budget_and_positive_k_stays_fixed(self):
+        route = {"evidence_budget": 10}
+        self.assertEqual(_effective_table_k(route, 0), 10)
+        self.assertEqual(_effective_table_k(route, 4), 4)
+
+    def test_negative_k_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "k must be >= 0"):
+            _effective_table_k({"evidence_budget": 8}, -1)
 
 
 if __name__ == "__main__":

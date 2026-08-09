@@ -155,7 +155,11 @@ Rules:
 1. Pick candidates by their line-item meaning AND their period. The column
    header (col_name) tells you the period — never pick a row whose period
    contradicts the question.
-2. For a comparison across companies, pick one candidate PER company.
+2. The `fact` column links a candidate to a required FACT SLOT (F1, F2, ...).
+   When FACT SLOTS are listed, cover every slot needed by the operation; for a
+   comparison across companies/periods, pick one candidate per required slot.
+   `ticker` identifies the company. `report_year` identifies the report, while
+   `col_name` identifies the period of the concrete cell and is authoritative.
 3. If no candidate fits the question, answer {"op": "none", "operands": []}.
    Guessing a wrong row is worse than admitting it is not there.
 4. Output only the JSON object. No explanation, no code, no markdown."""

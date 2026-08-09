@@ -23,7 +23,7 @@ from vifinqa import config
 from vifinqa import __version__ as vifinqa_version
 from vifinqa.utils.io import setup_stdout, ensure_dir
 
-PAYLOAD_SCHEMA_VERSION = 2
+PAYLOAD_SCHEMA_VERSION = 3
 MANIFEST_NAME = "payload-manifest.json"
 
 

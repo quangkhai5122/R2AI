@@ -137,6 +137,124 @@ class CodegenCheckpointTests(unittest.TestCase):
             self.assertTrue(all(r["source"] == "none" for r in rows))
 
 
+class _SelectionTraceBundle:
+    def __init__(self, candidates=None):
+        self.id = 7
+        self.question = "test selection trace"
+        self.route = {"unit_scale": 1.0, "output_type": "number"}
+        self.run_signature = "trace-sig"
+        self._candidates = candidates if candidates is not None else [
+            SimpleNamespace(
+                var="df1", label="Revenue", col=1, col_name="2024",
+                value=100.0, unit_scale=1.0, score=85.0,
+                report_id="AAA_2024", table_pos=0, code="10",
+            ),
+            SimpleNamespace(
+                var="df1", label="Zero base", col=2, col_name="2023",
+                value=0.0, unit_scale=1.0, score=80.0,
+                report_id="AAA_2024", table_pos=0, code="20",
+            ),
+        ]
+
+    def shortlist(self, _encoder=None, top_n=12):
+        return self._candidates[:top_n]
+
+    def used_vars(self, _code):
+        return [{"var": "df1", "report_id": "AAA_2024", "table_pos": 0}]
+
+
+class SelectionTraceTests(unittest.TestCase):
+    def test_attempt_taxonomy_and_first_valid_decision_are_recorded(self):
+        bundle = _SelectionTraceBundle()
+        samples = [
+            "not json",
+            '{"op":"difference","operands":[1]}',
+            '{"op":"ratio","operands":[1,2]}',
+            '{"op":"lookup","operands":[1]}',
+            '{"op":"lookup","operands":[2]}',
+        ]
+        replay = {"status": "ok", "value": 100.0, "error": None,
+                  "semantic": {"ok": True}}
+        with patch.object(generate, "_run_validated", return_value=replay):
+            rec, trace = generate._selection_result(
+                bundle, samples, None, return_trace=True,
+            )
+
+        self.assertEqual(rec["answer"], 100.0)
+        self.assertEqual(trace["schema_version"], 1)
+        self.assertEqual(trace["outcome"], "accepted")
+        self.assertEqual(trace["accepted_attempt"], 4)
+        self.assertEqual(trace["attempts_evaluated"], 4)
+        self.assertEqual(
+            [a["reason_code"] for a in trace["attempts"]],
+            ["parse_error", "invalid_selection", "synthesis_error", "",
+             "not_evaluated_after_acceptance"],
+        )
+        self.assertEqual(trace["attempts"][3]["stage"], "accepted")
+        self.assertIn("raw_sha256", trace["attempts"][0])
+
+    def test_execution_semantic_and_replay_rejections_are_distinct(self):
+        bundle = _SelectionTraceBundle()
+        sample = ['{"op":"lookup","operands":[1]}']
+        cases = [
+            ({"status": "error", "value": None, "error": "missing cell"},
+             "execution", "execution_failed"),
+            ({"status": "semantic_error", "value": 100.0,
+              "error": "answer is not derived from any dataframe",
+              "semantic": {"ok": False, "errors": ["ungrounded"]}},
+             "semantic", "semantic_validation_failed"),
+            ({"status": "ok", "value": 101.0, "error": None,
+              "semantic": {"ok": True}},
+             "replay", "answer_mismatch"),
+        ]
+        for replay, stage, reason_code in cases:
+            with self.subTest(stage=stage), \
+                    patch.object(generate, "_run_validated", return_value=replay):
+                rec, trace = generate._selection_result(
+                    bundle, sample, None, return_trace=True,
+                )
+                self.assertIsNone(rec)
+                self.assertEqual(trace["outcome"], "rejected")
+                self.assertEqual(trace["attempts"][0]["stage"], stage)
+                self.assertEqual(trace["attempts"][0]["reason_code"], reason_code)
+
+    def test_raw_response_is_sanitized_bounded_and_hashed(self):
+        raw = "\x00" + "x" * (generate._SELECTION_RAW_MAX_CHARS + 25)
+        attempt = generate._attempt_record(1, raw)
+        self.assertNotIn("\x00", attempt["raw_response"])
+        self.assertEqual(len(attempt["raw_response"]),
+                         generate._SELECTION_RAW_MAX_CHARS)
+        self.assertTrue(attempt["raw_truncated"])
+        self.assertEqual(attempt["raw_chars"], len(raw))
+        self.assertEqual(len(attempt["raw_sha256"]), 64)
+
+    def test_explicit_none_and_empty_shortlist_are_auditable(self):
+        rec, trace = generate._selection_result(
+            _SelectionTraceBundle(), ['{"op":"none","operands":[]}'], None,
+            return_trace=True,
+        )
+        self.assertIsNone(rec)
+        self.assertEqual(trace["attempts"][0]["reason_code"], "model_none")
+
+        rec, trace = generate._selection_result(
+            _SelectionTraceBundle(candidates=[]), ["anything"], None,
+            return_trace=True,
+        )
+        self.assertIsNone(rec)
+        self.assertEqual(trace["outcome"], "no_candidates")
+        self.assertEqual(trace["attempts"][0]["reason_code"], "no_candidates")
+
+    def test_trace_survives_flush_and_resume_loader(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "trace.jsonl"
+            trace = {"schema_version": 1, "outcome": "rejected",
+                     "attempts": [{"reason_code": "parse_error"}]}
+            result = {"id": 7, "source": "none", "selection_trace": trace}
+            generate._flush(out, [{"id": 7}], {7: result})
+            self.assertEqual(generate._load_previous(out)[7]["selection_trace"],
+                             trace)
+
+
 class HfOomRetryTests(unittest.TestCase):
     def test_cuda_oom_halves_batch_and_retries_without_skipping(self):
         class FakeTensor:
@@ -230,6 +348,8 @@ class PayloadManifestTests(unittest.TestCase):
                 "code/vifinqa/codegen/llm_client.py",
                 "code/vifinqa/codegen/prompts.py",
                 "code/vifinqa/codegen/executor.py",
+                "code/vifinqa/codegen/selection.py",
+                "code/vifinqa/retrieval/shortlist.py",
             ]
             hashes = {}
             for rel in rels:
@@ -271,7 +391,7 @@ class PayloadManifestTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(content)
             manifest = builder._build_manifest(out)
-            self.assertEqual(manifest["schema_version"], 2)
+            self.assertEqual(manifest["schema_version"], 3)
             self.assertEqual(set(manifest["files"]), {
                 "retrieval.jsonl", "code/kaggle_codegen.py",
                 "store/reports.parquet",

@@ -8,7 +8,9 @@ Outputs codegen_results.jsonl records:
 """
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import time
 from collections import Counter
 from pathlib import Path
@@ -33,6 +35,24 @@ from .semantic import (
 )
 
 
+_SELECTION_TRACE_SCHEMA = 1
+_SELECTION_RAW_MAX_CHARS = 2_000
+_SELECTION_REASON_MAX_CHARS = 500
+
+
+def _effective_table_k(route: dict, k: int) -> int:
+    """k>0 is a fixed cap; k=0 uses the route's dynamic evidence budget."""
+    if k < 0:
+        raise ValueError("k must be >= 0 (0 = route.evidence_budget)")
+    if k > 0:
+        return k
+    try:
+        budget = int(route.get("evidence_budget") or CODEGEN_K)
+    except (TypeError, ValueError):
+        budget = CODEGEN_K
+    return max(1, budget)
+
+
 class QuestionBundle:
     def __init__(self, rec: dict, store: Store, k: int = CODEGEN_K,
                  run_signature: str = ""):
@@ -40,9 +60,10 @@ class QuestionBundle:
         self.question = rec["question"]
         self.route = rec["route"]
         self.run_signature = run_signature
-        self.cands = rec["candidates"][:k]
+        self.evidence_k = _effective_table_k(self.route, k)
+        self.cands = rec["candidates"][:self.evidence_k]
         self.tables: list[dict] = []
-        self._shortlist = None
+        self._shortlists = {}
         self.dfs: dict = {}
         by_ticker: dict[str, list[dict]] = {}
         for c in self.cands:
@@ -62,6 +83,7 @@ class QuestionBundle:
             us = None if (us is None or us != us) else float(us)
             self.tables.append({
                 "var": var, "report_id": c["report_id"],
+                "ticker": c.get("ticker", ""),
                 "table_pos": int(c["table_pos"]), "page": c.get("page"),
                 "unit_scale": us, "unit_source": m.get("unit_source", "none"),
                 "report_year": int(m["year"]), "csv_text": csv_text,
@@ -71,23 +93,29 @@ class QuestionBundle:
     def shortlist(self, encoder=None, top_n: int = 8):
         """Row-level schema linking (P1.1): pre-match candidate cells so the
         model chooses among ~8 rows instead of scanning every table."""
-        if self._shortlist is None:
+        key = (id(encoder), int(top_n))
+        if key not in self._shortlists:
             variants = self.route.get("metric_variants") or [self.route.get("metric_norm", "")]
-            self._shortlist = build_shortlist(
+            plan = self.route.get("plan") or {}
+            self._shortlists[key] = build_shortlist(
                 self.tables, variants, self.route.get("years") or [],
-                top_n=top_n, encoder=encoder)
-        return self._shortlist
+                top_n=top_n, encoder=encoder,
+                facts=plan.get("facts") or None)
+        return self._shortlists[key]
 
     def select_messages(self, encoder=None) -> list[dict]:
         """Selection mode: the model only picks shortlist rows + an operation."""
         plan = self.route.get("plan") or {}
         op = plan.get("op", "lookup")
-        plan_block = ""
-        if op != "lookup" or len(plan.get("facts", [])) > 1:
-            plan_block = ("HINT — the question looks like: " + op + "\n"
-                          "ENTITIES/PERIODS NEEDED: " + ", ".join(
-                              f"{f.get('ticker')}/{f.get('year')}"
-                              for f in plan.get("facts", [])[:8]))
+        facts = plan.get("facts", [])
+        plan_block = "HINT - parsed operation: " + op
+        if facts:
+            plan_block += "\nFACT SLOTS (candidate column 'fact' links to these):\n"
+            plan_block += "\n".join(
+                f"F{i}: ticker={f.get('ticker') or '?'}; year={f.get('year') or '?'}; "
+                f"role={f.get('role') or 'value'}; metric={f.get('metric') or '?'}"
+                for i, f in enumerate(facts[:24], 1)
+            )
         return [{"role": "system", "content": SELECT_SYSTEM},
                 {"role": "user", "content": build_select_user(
                     self.question, self.route,
@@ -288,15 +316,28 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
             )
         debug_queue = []
         if llm_mode == "select":
+            trace_outcomes, trace_rejections = Counter(), Counter()
             for b, samples in zip(part, gens):
-                rec = _selection_result(b, samples, encoder)
+                rec, trace = _selection_result(
+                    b, samples, encoder, return_trace=True,
+                )
+                trace_outcomes[trace.get("outcome", "unknown")] += 1
+                trace_rejections.update(trace.get("rejection_counts") or {})
                 if rec is not None:
-                    results[b.id] = _arbitrated(b, rule_answers.get(b.id), rec,
-                                                1, 1)
+                    out = _arbitrated(b, rule_answers.get(b.id), rec, 1, 1)
+                else:
+                    # Selection failures keep exactly the same deterministic
+                    # answer as before; only attach audit metadata explaining
+                    # why none of the model samples was usable.
+                    out = results[b.id]
+                out["selection_trace"] = trace
+                results[b.id] = out
             _flush(out_path, recs, results)
             dt, elapsed = time.time() - t0, time.time() - t_start
             print(f"[chunk {ci+1}/{n_chunks}] {len(part)}q in {dt/60:.1f}min | "
                   f"elapsed {elapsed/60:.1f}min | {_srcs(recs, results)}", flush=True)
+            print(f"  selection trace: outcomes={dict(trace_outcomes)} "
+                  f"rejections={dict(trace_rejections)}", flush=True)
             if time_budget_s and elapsed + dt > time_budget_s:
                 print("time budget reached -> stopping cleanly", flush=True)
                 break
@@ -406,32 +447,215 @@ def _run_validated(b: QuestionBundle, code: str) -> dict:
     return result
 
 
-def _selection_result(b: QuestionBundle, samples, encoder) -> dict | None:
+def _bounded_trace_text(value, limit: int) -> tuple[str, int, bool, str]:
+    """Return a JSON-safe, bounded preview plus provenance for audit logs.
+
+    Model output is normally a tiny JSON object, but backend failures can leak
+    very large strings or control characters into a checkpoint.  The digest
+    lets us compare full responses without making the JSONL unbounded.
+    """
+    raw = "" if value is None else str(value)
+    encoded = raw.encode("utf-8", errors="replace")
+    clean = encoded.decode("utf-8", errors="replace")
+    clean = "".join(
+        ch if ch in "\n\r\t" or ord(ch) >= 32 else "\ufffd" for ch in clean
+    )
+    return (clean[:limit], len(clean), len(clean) > limit,
+            hashlib.sha256(encoded).hexdigest())
+
+
+def _trace_reason(value) -> str:
+    return _bounded_trace_text(value, _SELECTION_REASON_MAX_CHARS)[0]
+
+
+def _attempt_record(index: int, text) -> dict:
+    preview, n_chars, truncated, digest = _bounded_trace_text(
+        text, _SELECTION_RAW_MAX_CHARS,
+    )
+    return {
+        "index": int(index),
+        "raw_response": preview,
+        "raw_chars": int(n_chars),
+        "raw_truncated": bool(truncated),
+        "raw_sha256": digest,
+        "stage": "parse",
+        "accepted": False,
+        "reason_code": "",
+        "reason": "",
+    }
+
+
+def _finish_selection_trace(candidate_count: int, samples: list,
+                            attempts: list[dict], outcome: str,
+                            accepted_attempt: int | None = None) -> dict:
+    rejected = Counter(
+        a.get("reason_code") for a in attempts
+        if (a.get("reason_code") and not a.get("accepted")
+            and a.get("stage") != "not_evaluated")
+    )
+    evaluated = sum(a.get("stage") != "not_evaluated" for a in attempts)
+    return {
+        "schema_version": _SELECTION_TRACE_SCHEMA,
+        "outcome": outcome,
+        "candidate_count": int(candidate_count),
+        "samples_received": len(samples),
+        "attempts_evaluated": int(evaluated),
+        "accepted_attempt": accepted_attempt,
+        "rejection_counts": dict(rejected),
+        "attempts": attempts,
+    }
+
+
+def _selection_result(b: QuestionBundle, samples, encoder,
+                      return_trace: bool = False):
     """Turn the model's JSON pick into a verified answer + generated query.
 
     The model never writes pandas here, so the three failure classes audited in
     submission #12 (missing column filter, missing unit conversion, regex
     patterns) cannot occur: selection.synthesize emits the expression.
+
+    ``return_trace`` is intentionally optional so existing callers keep the
+    historical ``dict | None`` API.  The runner requests the trace and stores it
+    as metadata even when the deterministic rule answer remains final.
     """
     cands = b.shortlist(encoder, top_n=12)
+    samples = list(samples or [])
     if not cands:
-        return None
-    for text in samples:
+        attempts = []
+        for index, text in enumerate(samples, start=1):
+            attempt = _attempt_record(index, text)
+            attempt.update({
+                "stage": "not_evaluated",
+                "reason_code": "no_candidates",
+                "reason": "selection shortlist is empty",
+            })
+            attempts.append(attempt)
+        trace = _finish_selection_trace(0, samples, attempts, "no_candidates")
+        return (None, trace) if return_trace else None
+
+    attempts: list[dict] = []
+    accepted = None
+    accepted_index = None
+    for index, text in enumerate(samples, start=1):
+        attempt = _attempt_record(index, text)
         sel = parse_selection(text)
-        if sel is None or sel.op == "none":
+        if sel is None:
+            explicit_none = bool(re.search(
+                r'["\']op["\']\s*:\s*["\']none["\']', str(text), re.I,
+            ))
+            attempt.update({
+                "stage": "parse",
+                "reason_code": "model_none" if explicit_none else "parse_error",
+                "reason": ("model explicitly selected no candidate"
+                           if explicit_none else
+                           "response does not contain a parseable selection JSON"),
+            })
+            attempts.append(attempt)
+            continue
+        attempt["selection"] = {
+            "op": sel.op,
+            "operands": list(sel.operands),
+            "note": _trace_reason(sel.note),
+        }
+        if sel.op == "none":
+            attempt.update({
+                "stage": "selection",
+                "reason_code": "model_none",
+                "reason": "model explicitly selected no candidate",
+            })
+            attempts.append(attempt)
+            continue
+        validation_error = sel.valid_for(len(cands))
+        if validation_error:
+            attempt.update({
+                "stage": "selection",
+                "reason_code": "invalid_selection",
+                "reason": _trace_reason(validation_error),
+            })
+            attempts.append(attempt)
             continue
         answer, query, err = synthesize(sel, cands, b.route)
         if err or answer is None:
+            attempt.update({
+                "stage": "synthesis",
+                "reason_code": "synthesis_error",
+                "reason": _trace_reason(err or "synthesizer returned no answer"),
+            })
+            attempts.append(attempt)
             continue
         ex = _run_validated(b, query)          # the query must reproduce it
-        if ex["status"] != "ok" or abs(ex["value"] - answer) > 0.011:
+        attempt["execution"] = {
+            "status": str(ex.get("status", "")),
+            "value": ex.get("value"),
+            "error": _trace_reason(ex.get("error") or ""),
+        }
+        if ex["status"] != "ok":
+            if ex["status"] == "semantic_error":
+                attempt.update({
+                    "stage": "semantic",
+                    "reason_code": "semantic_validation_failed",
+                    "reason": _trace_reason(ex.get("error") or
+                                            "semantic validation failed"),
+                    "semantic": ex.get("semantic") or {},
+                })
+            else:
+                attempt.update({
+                    "stage": "execution",
+                    "reason_code": "execution_failed",
+                    "reason": _trace_reason(ex.get("error") or
+                                            ex.get("status") or
+                                            "query execution failed"),
+                })
+            attempts.append(attempt)
+            continue
+        if abs(ex["value"] - answer) > 0.011:
+            attempt.update({
+                "stage": "replay",
+                "reason_code": "answer_mismatch",
+                "reason": (f"synthesized answer {answer!r} != replay value "
+                           f"{ex['value']!r}"),
+            })
+            attempts.append(attempt)
             continue
         out = _final(b, round(ex["value"], 2), query, "llm_select",
                      semantic=ex.get("semantic"))
         out["detail"] = f"op={sel.op} operands={sel.operands}"
         out["detail_conf"] = sel_conf(sel, cands, answer, b.route)
-        return out
-    return None
+        attempt.update({
+            "stage": "accepted",
+            "accepted": True,
+            "reason_code": "",
+            "reason": "",
+            "answer": float(out["answer"]),
+        })
+        attempts.append(attempt)
+        accepted, accepted_index = out, index
+        break
+
+    # Preserve raw model responses for every requested sample while retaining
+    # the historical first-valid-sample decision.  Later samples are never
+    # parsed, synthesized or executed after a successful attempt.
+    if accepted is not None and accepted_index is not None:
+        for index, text in enumerate(samples[accepted_index:],
+                                     start=accepted_index + 1):
+            attempt = _attempt_record(index, text)
+            attempt.update({
+                "stage": "not_evaluated",
+                "reason_code": "not_evaluated_after_acceptance",
+                "reason": f"attempt {accepted_index} was already accepted",
+            })
+            attempts.append(attempt)
+        outcome = "accepted"
+    elif not samples:
+        outcome = "no_samples"
+    else:
+        outcome = "rejected"
+    trace = _finish_selection_trace(
+        len(cands), samples, attempts, outcome, accepted_index,
+    )
+    if accepted is not None:
+        accepted["selection_trace"] = trace
+    return (accepted, trace) if return_trace else accepted
 
 
 def _arbitrated(b: QuestionBundle, rule: dict | None, llm_rec: dict,
