@@ -40,6 +40,15 @@ _COUNT_OUTPUT = re.compile(
     r"|\bco\s+bao\s+nhieu\s+don\s+vi\b"
 )
 
+# Brand names that occur in the competition questions but cannot be derived
+# reliably from the legal names in code_stock.csv.  Keep this list deliberately
+# small and exact: it is an entity-routing guard, not a second fuzzy matcher.
+_CURATED_BRAND_ALIASES: dict[str, tuple[str, ...]] = {
+    "MBB": ("mbbank", "mb bank"),
+    "EIB": ("eximbank", "exim bank"),
+    "SAB": ("sabeco",),
+}
+
 _UNIT_Q = [
     (re.compile(r"\btrieu\s+(?:co\s+phieu|co\s+phan)\b"), 1e6, "triệu cổ phiếu"),
     (re.compile(r"\b(?:nghin|ngan)\s+(?:co\s+phieu|co\s+phan)\b"), 1e3, "nghìn cổ phiếu"),
@@ -110,6 +119,11 @@ class StockMap:
                         if short:
                             variants.append(short)
             variants = list(dict.fromkeys(variants))
+            for alias in _CURATED_BRAND_ALIASES.get(t, ()):
+                alias_norm = norm(alias)
+                if alias_norm:
+                    variants.append(alias_norm)
+            variants = list(dict.fromkeys(variants))
             for v in variants:
                 self.aliases.append((v, t))
             self.aliases_of[t] = sorted(variants, key=len, reverse=True)
@@ -134,7 +148,7 @@ class StockMap:
         # "CTCP Chứng khoán FPT" maps only to FTS, not both FTS and FPT.
         candidates = []
         for alias, ticker in self.aliases:
-            if len(alias) < 7:
+            if len(alias) < 5:
                 continue
             rex = re.compile(rf"(?<![0-9a-z]){re.escape(alias)}(?![0-9a-z])")
             for match in rex.finditer(qn):
@@ -194,8 +208,9 @@ class StockMap:
 
         # When the question explicitly asks for the parent company, aliases
         # before that phrase describe subsidiaries or counterparties.
-        parent_anchor = qn.rfind("cua cong ty me")
-        if parent_anchor >= 0:
+        parent_anchors = [m.start() for m in re.finditer("cua cong ty me", qn)]
+        if len(parent_anchors) == 1:
+            parent_anchor = parent_anchors[0]
             scoped_mentions = [item for item in mentions if item[0] >= parent_anchor]
             if scoped_mentions:
                 mentions = scoped_mentions

@@ -37,6 +37,7 @@ class Candidate:
     score: float
     lexical: float
     semantic: float
+    rescue: bool = False
     # Provenance shown to the selection model. ``fact_slot`` is empty for the
     # legacy/global shortlist and F1/F2/... for a fact-aware shortlist.
     ticker: str = ""
@@ -54,19 +55,26 @@ class Candidate:
 def build_shortlist(tables: list[dict], metric_variants: list[str],
                     years: list[int] | None = None, top_n: int = 8,
                     encoder=None, min_score: float = 35.0,
-                    facts: list[dict] | None = None) -> list[Candidate]:
+                    facts: list[dict] | None = None,
+                    schema_rescue: bool = False) -> list[Candidate]:
     """Build a global or fact-aware shortlist of concrete table cells.
 
     ``facts`` activates per-(ticker, year, metric) groups. Each non-empty fact
     gets a fair share of the prompt budget, so a high-scoring company/report
     cannot starve the other operands of a composite question. The legacy call
     shape remains valid and preserves its ranking for zero/one requested year.
+
+    ``schema_rescue`` is intentionally opt-in.  It scores both row labels and
+    column names and applies the threshold only after year/code/qualifier
+    evidence.  The codegen bundle invokes it only after the strict shortlist is
+    empty, so existing non-empty P2.1 prompts remain unchanged.
     """
     facts = [f for f in (facts or []) if isinstance(f, dict)]
     requested_years = list(dict.fromkeys(years or []))
     if not facts and len(requested_years) <= 1:
         cands = _build_shortlist_legacy(
             tables, metric_variants, requested_years, top_n, encoder, min_score,
+            schema_rescue,
         )
         return _attach_metadata(cands, tables)
 
@@ -78,7 +86,7 @@ def build_shortlist(tables: list[dict], metric_variants: list[str],
             fact_year = _as_year(fact.get("year"))
             group = _build_shortlist_legacy(
                 scoped, variants, [fact_year] if fact_year is not None else [],
-                top_n, encoder, min_score,
+                top_n, encoder, min_score, schema_rescue,
             )
             groups.append(_attach_metadata(
                 group, scoped, fact=fact, fact_slot=f"F{idx}",
@@ -89,6 +97,7 @@ def build_shortlist(tables: list[dict], metric_variants: list[str],
         for idx, year in enumerate(requested_years, 1):
             group = _build_shortlist_legacy(
                 tables, metric_variants, [year], top_n, encoder, min_score,
+                schema_rescue,
             )
             groups.append(_attach_metadata(
                 group, tables, fact={"year": year}, fact_slot=f"Y{idx}",
@@ -102,7 +111,8 @@ def build_shortlist(tables: list[dict], metric_variants: list[str],
 
 def _build_shortlist_legacy(tables: list[dict], metric_variants: list[str],
                             years: list[int] | None = None, top_n: int = 8,
-                            encoder=None, min_score: float = 35.0) -> list[Candidate]:
+                            encoder=None, min_score: float = 35.0,
+                            schema_rescue: bool = False) -> list[Candidate]:
     """tables: bundle tables ({var, report_id, table_pos, csv_text, ...}).
 
     Returns the best `top_n` (label, column) cells across all tables, sorted by
@@ -120,6 +130,9 @@ def _build_shortlist_legacy(tables: list[dict], metric_variants: list[str],
             df = df_roundtrip(t["csv_text"])
             all_labels.extend(str(l) for l in df["label"].unique()
                               if isinstance(l, str) and len(l) > 3)
+            if schema_rescue and "col_name" in df.columns:
+                all_labels.extend(str(c) for c in df["col_name"].unique()
+                                  if isinstance(c, str) and len(c) > 3)
         if all_labels:
             sem_lookup = encoder.similarity(metric_variants, sorted(set(all_labels)))
 
@@ -131,22 +144,42 @@ def _build_shortlist_legacy(tables: list[dict], metric_variants: list[str],
         for label in df["label"].unique():
             if not isinstance(label, str) or len(label) <= 3:
                 continue
-            lex = max(label_metric_score(label, m) for m in metric_variants)
-            sem = float(sem_lookup.get(label, 0.0)) * 100.0
-            score = max(lex, sem) + 0.25 * min(lex, sem)
-            score += _qualifier_bonus(label, want_qual)
-            if score < min_score:
-                continue
-            # Prefer the TIGHTEST label covering the metric: extra qualifier
-            # tokens change the meaning ("Lợi nhuận sau thuế" vs "... chưa phân
-            # phối"), yet token-coverage alone scores both 100.
-            score -= _extra_token_penalty(label, metric_variants)
-
             sub = df[df["label"] == label]
-            pick = _pick_column(sub, years)
+            pick = (_pick_column_rescue(sub, years, metric_variants)
+                    if schema_rescue else _pick_column(sub, years))
             if pick is None:
                 continue
             row_i, col, col_name, value, unit_scale, code = pick
+
+            label_lex = max(label_metric_score(label, m)
+                            for m in metric_variants)
+            label_sem = float(sem_lookup.get(label, 0.0)) * 100.0
+            if schema_rescue:
+                # Some note tables place the requested concept in the column
+                # header (for example "Quyền sử dụng đất") while the row label
+                # contains only a generic qualifier.  Keep column evidence a
+                # little weaker than an equally good row-label match.
+                col_lex_raw = max(label_metric_score(col_name, m)
+                                  for m in metric_variants)
+                col_lex = 0.9 * col_lex_raw
+                col_sem = 0.9 * float(sem_lookup.get(col_name, 0.0)) * 100.0
+                lex, sem = max(label_lex, col_lex), max(label_sem, col_sem)
+                match_text = col_name if col_lex > label_lex else label
+                score = max(lex, sem) + 0.25 * min(lex, sem)
+                score += _qualifier_bonus(f"{label} {col_name}", want_qual)
+                score -= _extra_token_penalty(match_text, metric_variants)
+            else:
+                lex, sem = label_lex, label_sem
+                score = max(lex, sem) + 0.25 * min(lex, sem)
+                score += _qualifier_bonus(label, want_qual)
+                # Preserve the historical early cut for the strict control.
+                if score < min_score:
+                    continue
+                # Prefer the TIGHTEST label covering the metric: extra qualifier
+                # tokens change the meaning ("Lợi nhuận sau thuế" vs "... chưa
+                # phân phối"), yet token-coverage alone scores both 100.
+                score -= _extra_token_penalty(label, metric_variants)
+
             # A column header naming the asked year is hard evidence. A header
             # naming a DIFFERENT year is evidence of the WRONG period, which
             # silently corrupts multi-company comparisons (one company read at
@@ -165,15 +198,17 @@ def _build_shortlist_legacy(tables: list[dict], metric_variants: list[str],
                 row=int(row_i), label=str(label), code=str(code), col=int(col),
                 col_name=str(col_name), value=float(value),
                 unit_scale=float(unit_scale), score=round(float(score), 1),
-                lexical=round(float(lex), 1), semantic=round(float(sem), 1)))
+                lexical=round(float(lex), 1), semantic=round(float(sem), 1),
+                rescue=bool(schema_rescue)))
     out.sort(key=lambda c: -c.score)
-    return _dedupe(out)[:top_n]
+    return _dedupe(out, include_row=schema_rescue)[:top_n]
 
 
-def _dedupe(cands: list[Candidate]) -> list[Candidate]:
+def _dedupe(cands: list[Candidate], include_row: bool = False) -> list[Candidate]:
     seen, out = set(), []
     for c in cands:
-        key = (c.report_id, c.table_pos, norm(c.label), c.col)
+        key = (c.report_id, c.table_pos, norm(c.label), c.col,
+               c.row if include_row else None)
         if key in seen:
             continue
         seen.add(key)
@@ -381,6 +416,30 @@ def _pick_column(sub, years: list[int] | None):
     if best is None:
         return None
     _cs, idx, col, cn, val, us, code = best
+    row_i = int(sub.loc[idx, "row"]) if "row" in sub.columns else 0
+    return row_i, col, cn, val, us, code
+
+
+def _pick_column_rescue(sub, years: list[int] | None,
+                        metric_variants: list[str]):
+    """Choose a concrete cell using both period and column-schema evidence."""
+    best = None
+    cols = sorted(sub["col"].unique())
+    for r in sub.itertuples():
+        cn = str(r.col_name)
+        col_lex = max((label_metric_score(cn, m) for m in metric_variants),
+                      default=0.0)
+        year_status = _year_status(cn, years)
+        year_score = {"match": 30.0, "none": 0.0, "other": -30.0}[year_status]
+        positional = 1.0 if cols and int(r.col) == int(cols[0]) else 0.0
+        key = (year_score + 0.5 * col_lex + positional,
+               col_lex, -int(r.col))
+        if best is None or key > best[0]:
+            best = (key, r.Index, int(r.col), cn, float(r.value),
+                    float(r.unit_scale), str(getattr(r, "code", "")))
+    if best is None:
+        return None
+    _key, idx, col, cn, val, us, code = best
     row_i = int(sub.loc[idx, "row"]) if "row" in sub.columns else 0
     return row_i, col, cn, val, us, code
 

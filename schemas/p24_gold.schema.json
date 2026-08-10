@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vifinqa.local/schemas/p24_gold.schema.json",
+  "title": "ViFinQA P2.4 human gold record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "split",
+    "id",
+    "question",
+    "question_sha256",
+    "stratum",
+    "label_status",
+    "evidence",
+    "output",
+    "ast",
+    "replay",
+    "annotator_notes"
+  ],
+  "properties": {
+    "schema_version": {"const": "p24_gold_v1"},
+    "split": {"enum": ["tune", "locked"]},
+    "id": {"type": "integer", "minimum": 1},
+    "question": {"type": "string", "minLength": 1},
+    "question_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "stratum": {"type": "string", "minLength": 1},
+    "label_status": {"enum": ["unlabeled", "draft", "verified"]},
+    "evidence": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/evidence"}
+    },
+    "output": {"$ref": "#/$defs/output"},
+    "ast": {
+      "anyOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/astNode"}
+      ]
+    },
+    "replay": {"$ref": "#/$defs/replay"},
+    "annotator_notes": {"type": "string"}
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_id",
+        "variable",
+        "report_id",
+        "table_pos",
+        "row",
+        "col",
+        "label",
+        "code",
+        "col_name",
+        "value",
+        "unit_scale"
+      ],
+      "properties": {
+        "evidence_id": {"type": "string", "pattern": "^E[1-9][0-9]*$"},
+        "variable": {"type": "string", "pattern": "^df[1-9][0-9]*$"},
+        "report_id": {"type": "string", "minLength": 1},
+        "table_pos": {"type": "integer", "minimum": 0},
+        "row": {"type": "integer", "minimum": 0},
+        "col": {"type": "integer", "minimum": 0},
+        "label": {"type": "string"},
+        "code": {"type": "string"},
+        "col_name": {"type": "string"},
+        "value": {"type": "number"},
+        "unit_scale": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "value", "unit", "scale", "round_decimals"],
+      "properties": {
+        "type": {
+          "enum": ["number", "percent", "percentage_point", "ratio", "count", "year"]
+        },
+        "value": {"type": ["number", "null"]},
+        "unit": {"type": "string"},
+        "scale": {"type": "number", "exclusiveMinimum": 0},
+        "round_decimals": {"type": "integer", "minimum": 0, "maximum": 8}
+      }
+    },
+    "astNode": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "evidence_id"],
+          "properties": {
+            "kind": {"const": "evidence"},
+            "evidence_id": {"type": "string", "pattern": "^E[1-9][0-9]*$"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": {"const": "literal"},
+            "value": {"type": "number"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "op", "args"],
+          "properties": {
+            "kind": {"const": "op"},
+            "op": {
+              "enum": [
+                "lookup", "sum", "average", "difference", "growth_pct", "ratio",
+                "margin", "ratio_times", "ranking", "ranking_max", "ranking_min",
+                "argmax", "argmin", "count", "percentage_point", "cagr",
+                "hypothetical", "add", "subtract", "multiply", "divide", "abs",
+                "negate"
+              ]
+            },
+            "args": {"type": "array", "items": {"$ref": "#/$defs/astNode"}}
+          }
+        }
+      ]
+    },
+    "usedVar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["var", "report_id", "table_pos"],
+      "properties": {
+        "var": {"type": "string", "pattern": "^df[1-9][0-9]*$"},
+        "report_id": {"type": "string", "minLength": 1},
+        "table_pos": {"type": "integer", "minimum": 0}
+      }
+    },
+    "replay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pandas_query",
+        "used_vars",
+        "expected_answer",
+        "tolerance",
+        "status",
+        "evidence_sha256",
+        "ast_sha256"
+      ],
+      "properties": {
+        "pandas_query": {"type": "string"},
+        "used_vars": {"type": "array", "items": {"$ref": "#/$defs/usedVar"}},
+        "expected_answer": {"type": ["number", "null"]},
+        "tolerance": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "status": {"enum": ["unverified", "verified"]},
+        "evidence_sha256": {"type": "string"},
+        "ast_sha256": {"type": "string"}
+      }
+    }
+  }
+}

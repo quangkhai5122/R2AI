@@ -19,6 +19,9 @@ def stock_map(tmp_path: Path) -> StockMap:
             ("DTK", "Tổng Công ty Điện lực TKV - CTCP"),
             ("OCB", "Ngân hàng TMCP Phương Đông"),
             ("EIB", "Ngân hàng TMCP Xuất Nhập khẩu Việt Nam"),
+            ("MBB", "Ngân hàng TMCP Quân đội"),
+            ("SAB", "Tổng Công ty cổ phần Bia - Rượu - Nước giải khát Sài Gòn"),
+            ("DBC", "CTCP Tập đoàn Dabaco Việt Nam"),
             ("HAG", "Cong ty Co phan Hoang Anh Gia Lai"),
             ("HNG", "Cong ty Co phan Nong nghiep Quoc te Hoang Anh Gia Lai"),
             ("DCM", "Cong ty Co phan Phan bon Dau khi Ca Mau"),
@@ -79,6 +82,25 @@ def test_parent_company_scope_excludes_earlier_counterparty_alias(stock_map):
         stock_map,
     )
     assert parsed.tickers == ["DCM"]
+
+
+def test_curated_bank_brands_are_exact_multi_entity_aliases(stock_map):
+    parsed = parse_question(
+        "Tổng tài sản của MBBank lớn hơn Eximbank bao nhiêu triệu đồng?",
+        stock_map,
+    )
+    assert parsed.tickers == ["MBB", "EIB"]
+    assert parsed.ticker_source == "explicit_name"
+
+
+def test_repeated_parent_company_scope_keeps_both_comparison_entities(stock_map):
+    parsed = parse_question(
+        "Lợi nhuận của công ty mẹ Tổng Công ty cổ phần Bia - Rượu - Nước "
+        "giải khát Sài Gòn trừ lợi nhuận của công ty mẹ CTCP Tập đoàn Dabaco "
+        "Việt Nam là bao nhiêu?",
+        stock_map,
+    )
+    assert parsed.tickers == ["SAB", "DBC"]
 
 
 @pytest.mark.parametrize(

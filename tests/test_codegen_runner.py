@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 from vifinqa.codegen import generate
 from vifinqa.codegen.llm_client import HfBatchClient
+from vifinqa.utils.viet_text import fuzzy_scorer_provenance
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,9 +53,13 @@ class _FakeBundle:
         self.tables = [{"var": "df1", "report_id": "AAA_2024_consolidated",
                         "table_pos": 0}]
         self.dfs = {"df1": object()}
+        self.shortlist_trace = {"candidate_count": 1}
 
     def prompt_messages(self):
         return [{"role": "user", "content": self.question}]
+
+    def select_messages(self, _encoder=None):
+        return self.prompt_messages()
 
     def used_vars(self, _code):
         return [self.tables[0]]
@@ -78,6 +83,10 @@ def _exec_ok(code, _dfs):
     return {"status": "ok", "value": 1.0, "error": None}
 
 
+def _exec_fail(_code, _dfs):
+    return {"status": "error", "value": None, "error": "invalid code"}
+
+
 class CodegenCheckpointTests(unittest.TestCase):
     def _recs(self, path: Path, n=5):
         with path.open("w", encoding="utf-8") as f:
@@ -85,9 +94,10 @@ class CodegenCheckpointTests(unittest.TestCase):
                 f.write(json.dumps({"id": i, "question": f"q{i}"}) + "\n")
 
     def _run(self, retrieval, output, client, signature="sig-a", **kwargs):
+        exec_fn = kwargs.pop("exec_fn", _exec_ok)
         with patch.object(generate, "Store", _FakeStore), \
                 patch.object(generate, "QuestionBundle", _FakeBundle), \
-                patch.object(generate, "run_code", _exec_ok):
+                patch.object(generate, "run_code", exec_fn):
             generate.run_codegen(
                 retrieval, Path("unused"), output, client,
                 checkpoint_every=2, debug_rounds=0,
@@ -112,6 +122,90 @@ class CodegenCheckpointTests(unittest.TestCase):
             self.assertEqual(changed.calls, 3)
             rows = [json.loads(line) for line in output.read_text().splitlines()]
             self.assertEqual({r["run_signature"] for r in rows}, {"sig-b"})
+            self.assertTrue(all(
+                r["llm_attempt_status"] == "completed" for r in rows
+            ))
+
+    def test_completed_code_failures_are_not_requeued(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            retrieval, output = td / "retrieval.jsonl", td / "out.jsonl"
+            self._recs(retrieval, n=2)
+            first = _Client()
+            self._run(retrieval, output, first, exec_fn=_exec_fail)
+            self.assertEqual(first.calls, 1)
+            rows = [json.loads(line) for line in output.read_text().splitlines()]
+            self.assertTrue(all(r["source"] == "none" for r in rows))
+            self.assertTrue(all(
+                r["llm_attempt_status"] == "completed" for r in rows
+            ))
+
+            same = _Client(fail_on_call=1)
+            self._run(retrieval, output, same, exec_fn=_exec_fail)
+            self.assertEqual(same.calls, 0)
+
+    def test_selection_rule_kept_rejected_and_no_candidates_resume(self):
+        def fake_rule(bundle, _encoder=None):
+            row = generate._final(bundle, 1.0, "float(df1)", "rule")
+            row["detail_conf"] = 99.0
+            return row
+
+        def fake_selection(bundle, _samples, _encoder=None, return_trace=False):
+            outcome = {1: "accepted", 2: "rejected", 3: "no_candidates"}[
+                bundle.id
+            ]
+            trace = {"schema_version": 1, "outcome": outcome,
+                     "rejection_counts": {}}
+            record = None
+            if outcome == "accepted":
+                record = generate._final(
+                    bundle, 2.0, "float(df1) + 1", "llm_select",
+                )
+            return (record, trace) if return_trace else record
+
+        def run_selection(retrieval, output, client, signature):
+            with patch.object(generate, "Store", _FakeStore), \
+                    patch.object(generate, "QuestionBundle", _FakeBundle), \
+                    patch.object(generate, "_rule_result", fake_rule), \
+                    patch.object(generate, "_selection_result", fake_selection):
+                generate.run_codegen(
+                    retrieval, Path("unused"), output, client,
+                    checkpoint_every=3, debug_rounds=0,
+                    use_rule_fallback=True, run_signature=signature,
+                    llm_mode="select",
+                )
+
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            retrieval, output = td / "retrieval.jsonl", td / "out.jsonl"
+            self._recs(retrieval, n=3)
+            first = _Client()
+            run_selection(retrieval, output, first, "select-sig-a")
+            self.assertEqual(first.calls, 1)
+            rows = [json.loads(line) for line in output.read_text().splitlines()]
+            self.assertEqual([r["source"] for r in rows], ["rule", "rule", "rule"])
+            self.assertEqual(
+                [r["selection_trace"]["outcome"] for r in rows],
+                ["accepted", "rejected", "no_candidates"],
+            )
+            self.assertTrue(all(
+                r["llm_attempt_status"] == "completed" for r in rows
+            ))
+
+            same = _Client(fail_on_call=1)
+            run_selection(retrieval, output, same, "select-sig-a")
+            self.assertEqual(same.calls, 0)
+
+            changed = _Client()
+            run_selection(retrieval, output, changed, "select-sig-b")
+            self.assertEqual(changed.calls, 1)
+
+    def test_matching_legacy_selection_trace_is_completed(self):
+        row = {
+            "source": "rule", "run_signature": "legacy-sig",
+            "selection_trace": {"schema_version": 1, "outcome": "rejected"},
+        }
+        self.assertTrue(generate._has_completed_llm_attempt(row))
 
     def test_checkpoint_survives_later_chunk_failure(self):
         with tempfile.TemporaryDirectory() as td:
@@ -123,6 +217,9 @@ class CodegenCheckpointTests(unittest.TestCase):
             rows = [json.loads(line) for line in output.read_text().splitlines()]
             self.assertEqual(sum(r["source"] == "llm" for r in rows), 2)
             self.assertEqual(sum(r["source"] == "none" for r in rows), 3)
+            self.assertEqual(sum(
+                r.get("llm_attempt_status") == "completed" for r in rows
+            ), 2)
 
     def test_expired_budget_keeps_complete_rule_checkpoint(self):
         with tempfile.TemporaryDirectory() as td:
@@ -135,6 +232,7 @@ class CodegenCheckpointTests(unittest.TestCase):
             rows = [json.loads(line) for line in output.read_text().splitlines()]
             self.assertEqual(len(rows), 5)
             self.assertTrue(all(r["source"] == "none" for r in rows))
+            self.assertTrue(all("llm_attempt_status" not in r for r in rows))
 
 
 class _SelectionTraceBundle:
@@ -145,12 +243,12 @@ class _SelectionTraceBundle:
         self.run_signature = "trace-sig"
         self._candidates = candidates if candidates is not None else [
             SimpleNamespace(
-                var="df1", label="Revenue", col=1, col_name="2024",
+                var="df1", row=1, label="Revenue", col=1, col_name="2024",
                 value=100.0, unit_scale=1.0, score=85.0,
                 report_id="AAA_2024", table_pos=0, code="10",
             ),
             SimpleNamespace(
-                var="df1", label="Zero base", col=2, col_name="2023",
+                var="df1", row=2, label="Zero base", col=2, col_name="2023",
                 value=0.0, unit_scale=1.0, score=80.0,
                 report_id="AAA_2024", table_pos=0, code="20",
             ),
@@ -350,6 +448,7 @@ class PayloadManifestTests(unittest.TestCase):
                 "code/vifinqa/codegen/executor.py",
                 "code/vifinqa/codegen/selection.py",
                 "code/vifinqa/retrieval/shortlist.py",
+                "code/vifinqa/utils/viet_text.py",
             ]
             hashes = {}
             for rel in rels:
@@ -358,6 +457,7 @@ class PayloadManifestTests(unittest.TestCase):
                 path.write_bytes(rel.encode())
                 hashes[rel] = hashlib.sha256(rel.encode()).hexdigest()
             manifest = {"schema_version": runner.PAYLOAD_SCHEMA_VERSION,
+                        "fuzzy_scorer": fuzzy_scorer_provenance(),
                         "files": hashes}
             (payload / runner.MANIFEST_NAME).write_text(json.dumps(manifest))
             checked, digest = runner.verify_payload(payload, payload / "code")
@@ -368,6 +468,58 @@ class PayloadManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "hash mismatch"):
                 runner.verify_payload(payload, payload / "code")
 
+    def test_manifest_rejects_fuzzy_scorer_drift(self):
+        runner = _load_kaggle_runner()
+        with tempfile.TemporaryDirectory() as td:
+            payload = Path(td)
+            files = {"placeholder": hashlib.sha256(b"x").hexdigest()}
+            (payload / "placeholder").write_bytes(b"x")
+            manifest = {
+                "schema_version": runner.PAYLOAD_SCHEMA_VERSION,
+                "fuzzy_scorer": {"backend": "rapidfuzz", "version": "3.14.5"},
+                "files": files,
+            }
+            (payload / runner.MANIFEST_NAME).write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(SystemExit, "fuzzy scorer mismatch"):
+                runner.verify_payload(payload)
+
+    def test_run_signature_fingerprints_fuzzy_scorer(self):
+        runner = _load_kaggle_runner()
+        args = SimpleNamespace(
+            backend="hf", model="model", n=1, temperature=0.7,
+            max_tokens=96, debug_rounds=1, k=0, rule_first=False,
+            llm_target="all", llm_mode="select", use_dense=False,
+            dense_model="", seed=13, load_4bit=True,
+            max_input_tokens=5000, quantization="awq", tp=2,
+            max_model_len=6144, rescue_no_candidates=False,
+            rescue_table_k=20, rescue_min_score=28.0,
+            batch_size=4, checkpoint_every=32, limit=0,
+        )
+        scorer = fuzzy_scorer_provenance()
+        self.assertEqual(runner.FUZZY_SCORER, scorer)
+        sig = runner.run_signature(args, "manifest-digest", scorer)
+        changed = runner.run_signature(
+            args, "manifest-digest", {**scorer, "version": "2"},
+        )
+        self.assertEqual(len(sig), 64)
+        self.assertNotEqual(sig, changed)
+
+        for field, value in {
+            "batch_size": 2,
+            "checkpoint_every": 16,
+            "limit": 12,
+        }.items():
+            with self.subTest(field=field):
+                changed_args = SimpleNamespace(**{
+                    **vars(args), field: value,
+                })
+                self.assertNotEqual(
+                    sig,
+                    runner.run_signature(
+                        changed_args, "manifest-digest", scorer,
+                    ),
+                )
+
     def test_notebook_is_valid_json_and_has_no_hot_patch(self):
         notebook_path = ROOT / "kaggle" / "vifinqa-codegen.ipynb"
         notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
@@ -377,6 +529,7 @@ class PayloadManifestTests(unittest.TestCase):
         self.assertEqual(notebook["nbformat"], 4)
         self.assertNotIn("%%writefile", source)
         self.assertIn("payload-manifest.json", source)
+        self.assertIn("difflib.SequenceMatcher", source)
 
     def test_payload_builder_hashes_small_payload_and_preserves_id(self):
         builder = _load_payload_builder()
@@ -391,7 +544,8 @@ class PayloadManifestTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(content)
             manifest = builder._build_manifest(out)
-            self.assertEqual(manifest["schema_version"], 3)
+            self.assertEqual(manifest["schema_version"], 4)
+            self.assertEqual(manifest["fuzzy_scorer"], fuzzy_scorer_provenance())
             self.assertEqual(set(manifest["files"]), {
                 "retrieval.jsonl", "code/kaggle_codegen.py",
                 "store/reports.parquet",

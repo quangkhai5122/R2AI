@@ -23,8 +23,12 @@ import random
 import sys
 from pathlib import Path
 
-PAYLOAD_SCHEMA_VERSION = 3
+PAYLOAD_SCHEMA_VERSION = 4
 MANIFEST_NAME = "payload-manifest.json"
+FUZZY_SCORER = {
+    "backend": "difflib.SequenceMatcher",
+    "version": "1",
+}
 
 
 def _sha256(path: Path) -> str:
@@ -55,6 +59,13 @@ def verify_payload(payload: Path, runtime_code_dir: Path | None = None) -> tuple
     files = manifest.get("files")
     if not isinstance(files, dict) or not files:
         raise SystemExit("payload manifest has no file hashes")
+    fuzzy_scorer = manifest.get("fuzzy_scorer")
+    if fuzzy_scorer != FUZZY_SCORER:
+        raise SystemExit(
+            "payload fuzzy scorer mismatch: "
+            f"manifest={fuzzy_scorer!r}, runner requires {FUZZY_SCORER!r}; "
+            "rebuild and re-upload the payload"
+        )
     required = {
         "retrieval.jsonl",
         "store/reports.parquet",
@@ -65,6 +76,7 @@ def verify_payload(payload: Path, runtime_code_dir: Path | None = None) -> tuple
         "code/vifinqa/codegen/executor.py",
         "code/vifinqa/codegen/selection.py",
         "code/vifinqa/retrieval/shortlist.py",
+        "code/vifinqa/utils/viet_text.py",
     }
     missing_manifest = sorted(required - set(files))
     if missing_manifest:
@@ -92,16 +104,19 @@ def verify_payload(payload: Path, runtime_code_dir: Path | None = None) -> tuple
             if not runtime_path.is_file() or _sha256(runtime_path) != expected:
                 raise SystemExit(f"runtime code differs from payload: {rel}")
     stable_manifest = json.dumps(
-        {"schema_version": manifest["schema_version"], "files": files},
+        {"schema_version": manifest["schema_version"],
+         "fuzzy_scorer": fuzzy_scorer, "files": files},
         sort_keys=True, separators=(",", ":"),
     ).encode()
     return manifest, hashlib.sha256(stable_manifest).hexdigest()
 
 
-def run_signature(args, manifest_hash: str) -> str:
-    """Hash semantic generation settings; performance-only knobs are omitted."""
+def run_signature(args, manifest_hash: str, fuzzy_scorer: dict[str, str]) -> str:
+    """Hash settings that can change prompts, generations, or RNG grouping."""
     semantic = {
         "payload_manifest": manifest_hash,
+        "fuzzy_scorer_backend": fuzzy_scorer["backend"],
+        "fuzzy_scorer_version": fuzzy_scorer["version"],
         "backend": args.backend,
         "model": args.model,
         "n": args.n,
@@ -112,6 +127,11 @@ def run_signature(args, manifest_hash: str) -> str:
         "rule_first": args.rule_first,
         "llm_target": args.llm_target,
         "llm_mode": args.llm_mode,
+        "rescue_no_candidates": args.rescue_no_candidates,
+        "rescue_table_k": (args.rescue_table_k
+                           if args.rescue_no_candidates else 0),
+        "rescue_min_score": (args.rescue_min_score
+                             if args.rescue_no_candidates else 0.0),
         # dense matching changes the prompt shortlist -> a different semantic run
         "use_dense": args.use_dense,
         "dense_model": args.dense_model if args.use_dense else "",
@@ -121,6 +141,12 @@ def run_signature(args, manifest_hash: str) -> str:
         "quantization": args.quantization,
         "tp": args.tp,
         "max_model_len": args.max_model_len,
+        # These knobs change how stochastic HF generations are grouped and
+        # therefore which RNG draws reach each prompt.  Fingerprint them so a
+        # resumed checkpoint cannot silently mix heterogeneous generations.
+        "batch_size": args.batch_size,
+        "checkpoint_every": args.checkpoint_every,
+        "limit": args.limit,
     }
     raw = json.dumps(semantic, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(raw).hexdigest()
@@ -153,6 +179,19 @@ def main():
                     help="which questions the LLM should spend GPU time on")
     ap.add_argument("--rule-first", action="store_true",
                     help="skip the LLM for high-confidence rule matches (faster)")
+    ap.add_argument(
+        "--rescue-no-candidates", action="store_true",
+        help=("only when the strict shortlist is empty, widen the retrieval "
+              "table pool and use 2D label/column schema scoring"),
+    )
+    ap.add_argument(
+        "--rescue-table-k", type=int, default=20,
+        help="maximum retrieval tables inspected by no-candidate rescue",
+    )
+    ap.add_argument(
+        "--rescue-min-score", type=float, default=28.0,
+        help="post-bonus lexical threshold for opt-in no-candidate rescue",
+    )
     ap.add_argument("--checkpoint-every", type=int, default=32,
                     help="flush results to --out every N questions (crash safety)")
     ap.add_argument("--time-budget-min", type=float, default=420,
@@ -176,6 +215,10 @@ def main():
     args = ap.parse_args()
     if args.k < 0:
         ap.error("--k must be >= 0 (use 0 for dynamic evidence_budget)")
+    if args.rescue_table_k < 1:
+        ap.error("--rescue-table-k must be >= 1")
+    if not 0.0 <= args.rescue_min_score <= 100.0:
+        ap.error("--rescue-min-score must be between 0 and 100")
 
     payload = Path(args.payload)
     # import the vifinqa package sitting NEXT TO this script
@@ -183,11 +226,15 @@ def main():
     if args.skip_payload_verification:
         print("[WARN] payload verification explicitly disabled", flush=True)
         manifest_hash = "unverified"
+        fuzzy_scorer = dict(FUZZY_SCORER)
     else:
         manifest, manifest_hash = verify_payload(payload, runtime_code_dir)
+        fuzzy_scorer = manifest["fuzzy_scorer"]
         print(f"payload verified: schema={manifest['schema_version']} "
               f"files={len(manifest['files'])}", flush=True)
-    signature = run_signature(args, manifest_hash)
+    print(f"fuzzy scorer: backend={fuzzy_scorer['backend']} "
+          f"version={fuzzy_scorer['version']}", flush=True)
+    signature = run_signature(args, manifest_hash, fuzzy_scorer)
     print(f"run signature: {signature[:16]}", flush=True)
 
     sys.path.insert(0, str(runtime_code_dir))
@@ -236,6 +283,9 @@ def main():
         llm_target=args.llm_target,
         llm_mode=args.llm_mode,
         run_signature=signature,
+        rescue_no_candidates=args.rescue_no_candidates,
+        rescue_table_k=args.rescue_table_k,
+        rescue_min_score=args.rescue_min_score,
     )
     print(f"OK -> {args.out}")
 

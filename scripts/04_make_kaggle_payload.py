@@ -22,8 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from vifinqa import config
 from vifinqa import __version__ as vifinqa_version
 from vifinqa.utils.io import setup_stdout, ensure_dir
+from vifinqa.utils.viet_text import fuzzy_scorer_provenance
 
-PAYLOAD_SCHEMA_VERSION = 3
+PAYLOAD_SCHEMA_VERSION = 4
 MANIFEST_NAME = "payload-manifest.json"
 
 
@@ -51,6 +52,7 @@ def _build_manifest(out: Path) -> dict:
     return {
         "schema_version": PAYLOAD_SCHEMA_VERSION,
         "vifinqa_version": vifinqa_version,
+        "fuzzy_scorer": fuzzy_scorer_provenance(),
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "files": hashes,
     }

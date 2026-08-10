@@ -150,6 +150,9 @@ Operations:
   average           mean of all listed                    operands: [i, j, ...]
   ranking_max       the largest of the listed             operands: [i, j, ...]
   ranking_min       the smallest of the listed            operands: [i, j, ...]
+  argmax            year of the largest listed value      operands: [i, j, ...]
+  argmin            year of the smallest listed value     operands: [i, j, ...]
+  count             number of listed cells that satisfy   operands: [i, j, ...]
 
 Rules:
 1. Pick candidates by their line-item meaning AND their period. The column
@@ -162,7 +165,10 @@ Rules:
    `col_name` identifies the period of the concrete cell and is authoritative.
 3. If no candidate fits the question, answer {"op": "none", "operands": []}.
    Guessing a wrong row is worse than admitting it is not there.
-4. Output only the JSON object. No explanation, no code, no markdown."""
+4. For output_type=year use argmax/argmin and select one value per distinct
+   year. For output_type=count use count and select only the companies/items
+   that satisfy the condition in the question.
+5. Output only the JSON object. No explanation, no code, no markdown."""
 
 SELECT_USER_TMPL = """Question (Vietnamese): {question}
 

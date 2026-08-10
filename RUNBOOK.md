@@ -3,9 +3,10 @@
 > **File này là nguồn sự thật duy nhất về LỆNH CHẠY.** Mỗi khi pipeline đổi,
 > ghi đè trực tiếp vào đây (đừng tạo file mới) để không bị lạc phiên bản.
 >
-> Cập nhật lần cuối: **2026-08-08 (P2.1)** — thêm hybrid 14B→7B an toàn,
-> `selection_trace`, fact-aware shortlist và `--k 0` dùng evidence budget động.
-> Model vẫn chỉ chọn JSON; hệ thống giữ metadata ticker/report/year/fact và tự sinh pandas.
+> Cập nhật lần cuối: **2026-08-10 (leaderboard #18/#19 + quyết định P2.2)** — khóa
+> fuzzy scorer, replay an toàn Selection #17, thêm rescue chỉ khi shortlist rỗng và
+> dựng dev set tune/locked có hash guard. **Structured Selection v2 typed nested IR đã
+> GO theo §7quater nhưng chưa được triển khai.**
 
 ---
 
@@ -14,14 +15,15 @@
 | Thành phần | Phiên bản/giá trị đang dùng |
 |---|---|
 | `vifinqa` package | 0.2.0 |
-| Payload schema | **3** (P2.1 dynamic-k/fact-aware; có manifest SHA-256) |
+| Payload schema | **4** (manifest SHA-256 + fuzzy scorer contract) |
 | `TABLE_POS_MODE` | `line` (BTC xác nhận: vị trí = **số dòng** của `<table>`) |
 | `SUBMISSION_K` | 5 |
-| Retrieval artifact chuẩn | `artifacts/retrieval.jsonl` (phải là bản **P1**) |
-| Codegen artifact chuẩn | `artifacts/codegen_results.jsonl` |
-| Điểm tốt nhất đã nộp | #15 Selection 14B: TABLES_F2 .4334 / DOCS_F2 .8774 / ANSWER .1957 / EXEC .1957 |
-| Việc đang chờ điểm | hybrid #15 + fallback 7B; sau đó Qwen 14B P2.1 fact-aware |
+| Retrieval control chuẩn | `artifacts/retrieval.jsonl`, SHA-256 `96b71c5b…` |
+| Candidate CPU tốt nhất | `artifacts/codegen_p21r_all_v3.jsonl` → `submission_p21r_all_v3` |
+| Điểm tốt nhất đã nộp | #19 all-types v3: TABLES_F2 .4439 / DOCS_F2 .8969 / ANSWER .2292 / EXEC .2292 |
+| Thứ tự tiếp theo | freeze #19 → rescue-v1 control → Structured Selection v2 fill-only → hybrid |
 | Backend LLM Kaggle | `hf` (transformers). **vLLM không chạy trên T4** |
+| Fuzzy scorer | `difflib.SequenceMatcher`, contract version `1` |
 
 **Kiểm tra nhanh trạng thái trước mỗi phiên làm việc:**
 
@@ -42,6 +44,7 @@ python -m pytest tests -q
 |---|:--:|:--:|:--:|:--:|:--:|
 | `extraction/`, `utils/viet_num.py` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `router/`, `retrieval/{retrieve,bm25}.py` | – | ✅ | ✅ | ✅ | ✅ |
+| `utils/viet_text.py` (chỉ scorer) | – | ✅ | ✅ | ✅ | ✅ |
 | `retrieval/shortlist.py` | – | – | ✅ | ✅ | ✅ |
 | `codegen/rule_*.py`, `units.py` | – | – | ✅ | ✅ | ✅ |
 | `codegen/prompts.py`, `selection.py`, `generate.py`, `llm_client.py` | – | – | – | ✅ | ✅ |
@@ -52,31 +55,28 @@ python -m pytest tests -q
 Payload luôn phải dựng lại khi **bất kỳ** file nào trong `vifinqa/` hoặc
 `kaggle/kaggle_codegen.py` đổi, vì manifest băm SHA-256 toàn bộ code.
 
-### Riêng bản P2.1 fact-aware — đang ở trạng thái này
+### Riêng nhánh sau #17 — trạng thái hiện tại
 
-Đổi `retrieval/shortlist.py`, `codegen/{prompts,generate}.py`, runner và notebook.
-Không cần build lại store/retrieval. Phải chạy test, dựng lại payload và upload version mới.
+- Giữ bất biến `artifacts/retrieval.jsonl` cho replay P2.1r và lần Qwen rescue đầu tiên.
+- `artifacts/retrieval_rescue.jsonl` được dựng bằng router/retrieval hiện tại nhưng thay đổi
+  cả route và thứ hạng table; đây là **ablation riêng**, không gọi là rescue-only.
+- Mọi output mới dùng tên mới và run signature mới. Không resume trực tiếp artifact #17.
+- Payload schema 4 local đã dựng từ retrieval control; còn bước upload version mới trước
+  lần Kaggle §7ter.
 
 ```powershell
-# BỎ QUA 01, 02 — store và retrieval.jsonl hiện tại vẫn dùng được
-python scripts/03_rule_baseline.py --retrieval artifacts/retrieval.jsonl --k 4 --out artifacts/codegen_rule_k4_pre_factaware.jsonl
 python -m pytest tests -q
-python scripts/04_make_kaggle_payload.py --dataset-id <user1>/vifinqa-payload
-kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip -m "P2.1 fact-aware selection trace dynamic-k"
-
-# acc #2
-$env:KAGGLE_CONFIG_DIR = "D:\kaggle_acc2"
-python scripts/04_make_kaggle_payload.py --dataset-id <user2>/vifinqa-payload
-kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip -m "P2.1 fact-aware selection trace dynamic-k"
-Remove-Item Env:\KAGGLE_CONFIG_DIR
+python scripts/04_make_kaggle_payload.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --dataset-id <user>/vifinqa-payload
+kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip `
+  -m "P2.1r frozen-scorer no-candidate-rescue"
 ```
 
-Rồi chạy notebook/command 14B chính xác ở §7bis. Không dùng lại output #15 vì code/prompt/k
-đã đổi nên `run_signature` phải khác.
-
-Payload local đã rebuild và verify ngày 2026-08-08: schema 3, **245 files**, khoảng
-101 MB, manifest digest `edd32a94cfa05358`. Dataset ID hiện tại:
-`lequangkhai5122005/vifinqa-payload`. Việc còn lại là upload một version mới.
+Payload local 2026-08-10: schema 4, **249 files**, khoảng 101 MB; fuzzy scorer
+`difflib.SequenceMatcher/v1`; stable manifest digest bắt đầu `91920b45e4184f37`, raw
+manifest SHA-256 bắt đầu `e7dea8c4d212d751`. Retrieval source/payload cùng SHA-256
+`96b71c5b31a193dc…`; 47/47 source-code file khớp staged payload.
 
 ## 1. Cài đặt (một lần)
 
@@ -211,8 +211,158 @@ Kết quả đã kiểm chứng trên artifact hiện có:
 - hybrid signature bắt đầu bằng `43126dbdef3a2c51`;
 - submission: 1.012 entries, 1.349 CSV, replay thành công.
 
-File nộp ngay: `artifacts\submission_hybrid_sel14b_sel7b\submission.zip`.
+Đây là artifact lịch sử của submission #16 (score không tăng so với #15), không nộp lại.
 Không chạy hybrid output như checkpoint Kaggle; nó chỉ dùng để build submission.
+
+### 2.6 P2.1r — replay Selection #17, không dùng GPU
+
+Replay dùng chính `selection_trace` đã lưu trong #17, dựng lại shortlist trên retrieval
+control và chạy compiler xác định. Policy mặc định chỉ được thay structural placeholder
+`source=none/status=failed/answer=0/query=0.0`; 752 kết quả đã có của #17 không bị ghi đè.
+
+```powershell
+python scripts/12_replay_selection_p21r.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/submission_sel14b_factaware/codegen_sel14b_factaware.jsonl `
+  --out artifacts/codegen_p21r_year_only_v3.jsonl `
+  --audit artifacts/codegen_p21r_year_only_v3.audit.json `
+  --k 0 --top-n 12 --replace-policy none_only --output-types year
+
+python scripts/05_build_submission.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/codegen_p21r_year_only_v3.jsonl `
+  --out-dir artifacts/submission_p21r_year_only_v3 `
+  --sub-k 5
+```
+
+Year-only v3 đã dựng ngày 2026-08-10: **752 kept / 207 skipped type / 25 replayed /
+28 unresolved**, còn 235 structural-none; 1.012 expression compile/replay được, ZIP có
+1.550 CSV. Run signature bắt đầu `43bd291ff6f8a58e`; SHA-256 codegen bắt đầu
+`cec53f209909a806`; SHA-256 ZIP bắt đầu `6bceddd20709ae35`.
+
+Đây là candidate CPU bảo thủ: answer `0` cũ không thể là một năm hợp lệ nên replay sai
+không làm ANSWER/EXEC của 25 ID year thấp hơn placeholder, dù có thể vẫn chưa tăng và
+evidence bổ sung có thể đổi TABLES/DOCS. Review cả 25 record ở trường `replayed_records`
+trong audit trước khi nộp. Submission #18 đã xác nhận ANSWER/EXEC `.2253`.
+
+Biến thể rộng hơn chỉ dùng sau review/P2.4 tune:
+
+```powershell
+python scripts/12_replay_selection_p21r.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/submission_sel14b_factaware/codegen_sel14b_factaware.jsonl `
+  --out artifacts/codegen_p21r_all_v3.jsonl `
+  --audit artifacts/codegen_p21r_all_v3.audit.json `
+  --k 0 --top-n 12 --replace-policy none_only --output-types all
+python scripts/05_build_submission.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/codegen_p21r_all_v3.jsonl `
+  --out-dir artifacts/submission_p21r_all_v3 --sub-k 5
+```
+
+All-types v3: **752 kept / 40 replayed / 220 unresolved**; breakdown replay là
+25 `year`, 5 `count`, 4 `number`, 3 `percent`, 3 `ratio`. Duplicate stable cells bị
+fail-closed cho mọi operation. Review toàn bộ 5 `count` và 10 record số/percent/ratio,
+vì các loại này có thể có gold answer bằng 0 hoặc predicate mà model chọn sai. ZIP có
+1.569 CSV; run signature bắt đầu `36469da02106a4b7`, SHA-256 codegen bắt đầu
+`24203de5782a5f14`, SHA-256 ZIP bắt đầu `727a1e29b2e2bb24`. Submission #19 đạt
+ANSWER/EXEC `.2292` và hiện là control tốt nhất.
+
+Hai thế hệ cũ `submission_p21r_none_only` / `codegen_sel14b_factaware_p21r.jsonl`
+và `p21r_none_only_v2` / `codegen_p21r_none_only.jsonl` đều là
+**pre-guard, DO NOT UPLOAD/USE**; bản 46-replay có 6 record chọn trùng cùng stable cell
+qua index khác nhau. Không dùng
+`--replace-policy trace_failures` cho submission chính; đó chỉ là ablation có thể ghi đè
+đáp án đang thành công.
+
+### 2.7 Rescue shortlist rỗng — audit CPU trước, Qwen sau
+
+Rescue là opt-in và chỉ chạy khi strict shortlist không có candidate:
+
+1. mở rộng table pool từ budget route lên tối đa 20, vẫn dùng strict scorer;
+2. nếu vẫn rỗng, chấm 2D bằng `label + 0.9 × col_name`, threshold 28 sau bonus;
+3. nếu vẫn rỗng, giữ `none`; không hạ threshold cho các prompt vốn đã có shortlist.
+
+Audit không gọi LLM và không sửa artifact đầu vào:
+
+```powershell
+python scripts/13_audit_shortlist_rescue.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/submission_sel14b_factaware/codegen_sel14b_factaware.jsonl `
+  --out artifacts/shortlist_rescue_audit.json `
+  --k 0 --table-k 20 --min-score 28 --top-n 12
+```
+
+Kết quả trên đúng 142 trace `no_candidates` của #17: **24** câu được cứu chỉ nhờ
+`widen_strict`, **83** câu nhờ `schema_2d`, **35** vẫn rỗng; tổng coverage shortlist
+tiềm năng 107/142. Đây mới là coverage candidate, chưa phải 107 answer đúng.
+
+Chỉ giữ cấu hình 20/28 nếu review P2.4 tune cho thấy precision không giảm. Không dùng số
+candidate được cứu làm proxy cho ANSWER: coverage tăng nhưng row sai vẫn cho answer sai.
+
+`artifacts/retrieval_rescue.jsonl` chứa cả fix entity alias và retrieval chạy lại. Muốn đo
+nhánh đó, trước hết dựng **rule-only control riêng** rồi mới tốn GPU:
+
+```powershell
+python scripts/03_rule_baseline.py `
+  --retrieval artifacts/retrieval_rescue.jsonl --k 0 `
+  --out artifacts/codegen_rule_retrieval_rescue.jsonl
+```
+
+Kết quả control hiện tại: `rule=316 / rule_composite=110 / none=586`, chỉ **426** câu
+có đáp án, thấp hơn schema-4 control frozen `324 / 128 / 560` = **452** câu. Có 30 câu old-ok→none
+và chỉ 4 câu old-none→ok. Vì vậy **không dùng retrieval_rescue cho lượt GPU kế tiếp**;
+giữ nó làm artifact chẩn đoán router/retrieval cho một ablation sau.
+
+Không trộn output của retrieval này với `artifacts/retrieval.jsonl` khi build submission.
+
+### 2.8 P2.4 — dev set người gán nhãn
+
+Bundle cố định gồm tune=100 và locked=50, stratify theo operation × số fact. Fingerprint
+hiện tại: `311f17edcc8540d52b407c7ab84637f3052108bcb997adaf0fcf8fc04cb436d1`.
+Chi tiết evidence/AST/replay và protocol chống leakage ở `P2_4_LABELING_GUIDE.md`.
+
+```powershell
+python scripts/14_p24_devset.py validate-bundle
+python -m pytest tests/test_p24_devset.py tests/test_p24_evaluate.py -q
+
+$p24TuneDraft = "artifacts\devset_p24\p24_tune_gold.draft.jsonl"
+$p24TuneGold = "artifacts\devset_p24\p24_tune_gold.jsonl"
+if ((Test-Path -LiteralPath $p24TuneDraft) -or `
+    (Test-Path -LiteralPath $p24TuneGold)) { throw "Tune working files already exist" }
+Copy-Item -LiteralPath `
+  "artifacts\devset_p24\p24_tune_gold.template.jsonl" `
+  -Destination $p24TuneDraft
+
+# Trong lúc gán nhãn: identity/schema; sau khi đủ 100 verified: strict cell/AST/replay.
+python scripts/14_p24_devset.py validate-gold --split tune `
+  --gold $p24TuneDraft --allow-template
+python scripts/14_p24_devset.py fill-hashes --split tune `
+  --input $p24TuneDraft --output $p24TuneGold
+python scripts/14_p24_devset.py validate-gold --split tune `
+  --gold $p24TuneGold
+python scripts/14_p24_devset.py check-tune-input --input $p24TuneGold
+
+# So sánh candidate bằng cùng gold; evaluator yêu cầu codegen đủ 1.012 ID.
+python scripts/14_p24_devset.py evaluate --split tune `
+  --gold $p24TuneGold `
+  --codegen artifacts/submission_sel14b_factaware/codegen_sel14b_factaware.jsonl `
+  --output artifacts/devset_p24/eval_p21_tune.json
+python scripts/14_p24_devset.py evaluate --split tune `
+  --gold $p24TuneGold `
+  --codegen artifacts/codegen_p21r_year_only_v3.jsonl `
+  --output artifacts/devset_p24/eval_p21r_tune.json
+```
+
+Không mở locked để chọn threshold/prompt. Freeze code, config và run signature trước;
+sau đó strict-validate, seal, verify và chỉ đánh giá locked một lần. `fill-hashes` và
+`evaluate` đều từ chối ghi đè output có sẵn; `build` và `seal-locked` cũng là one-shot,
+không ghi đè bundle/seal đã khóa. Raw accuracy của 50
+câu locked không phải ước lượng population không chệch do sampler giữ chỗ cho strata hiếm;
+báo cả breakdown theo stratum và weighted aggregate. Tune hiện chỉ phủ 16/21 strata,
+thiếu 5 strata = 12/1.012 câu (`represented_population_mass=0.988142`), nên weighted
+tune là conditional trên strata được đại diện; luôn báo thêm `missing_strata`
+và `complete_population_coverage`.
 
 ---
 
@@ -260,7 +410,9 @@ Rebuild nếu **bất kỳ** thứ nào sau đây đổi: code trong `vifinqa/`,
 ### 4.2 Dựng payload
 
 ```powershell
-python scripts/04_make_kaggle_payload.py --dataset-id <user1>/vifinqa-payload
+python scripts/04_make_kaggle_payload.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --dataset-id <user1>/vifinqa-payload
 python scripts/04_make_kaggle_payload.py --dry-run        # kiểm tra trước, không ghi đè
 ```
 
@@ -269,7 +421,8 @@ Ra `artifacts\kaggle_payload\` (~100 MB) + `payload-manifest.json`.
 ### 4.3 Up lên acc #1
 
 ```powershell
-kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip -m "P1 metric+shortlist+plan"
+kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip `
+  -m "P2.1r frozen-scorer rescue-empty"
 ```
 
 (Lần đầu tiên với một acc: đổi `version` → `create`.)
@@ -279,7 +432,7 @@ kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip -m "P1 metric
 ```powershell
 # một lần: tải kaggle.json của acc #2 vào D:\kaggle_acc2\kaggle.json
 $env:KAGGLE_CONFIG_DIR = "D:\kaggle_acc2"
-python scripts/04_make_kaggle_payload.py --dataset-id <user2>/vifinqa-payload   # PHẢI chạy lại, id nằm trong metadata
+python scripts/04_make_kaggle_payload.py --retrieval artifacts/retrieval.jsonl --dataset-id <user2>/vifinqa-payload   # PHẢI chạy lại, id nằm trong metadata
 kaggle datasets create -p artifacts\kaggle_payload --dir-mode zip               # lần đầu
 kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip -m "refresh" # các lần sau
 Remove-Item Env:\KAGGLE_CONFIG_DIR
@@ -301,18 +454,22 @@ type artifacts\kaggle_payload\dataset-metadata.json
 Notebook: `kaggle/vifinqa-codegen.ipynb` → File → Import Notebook.
 Settings: **GPU T4 x2**, **Internet On**, Add Input = dataset payload (chỉ MỘT bản).
 
-Log đúng phải có: `payload verified: schema=3` → `run signature: ...` →
+Log đúng phải có: `payload verified: schema=4` →
+`fuzzy scorer: backend=difflib.SequenceMatcher version=1` → `run signature: ...` →
 `baseline written (...)` → `LLM queue: ...` → `[chunk 1/N] ...`
 
-Cấu hình đang khuyến nghị: **P2.1 Qwen 14B fact-aware Selection**. `--k 0` kích hoạt
-`route.evidence_budget` động (4–12 table), không phải k=0 table.
+Cấu hình đang khuyến nghị: **Qwen 14B fallback cho P2.1r với rescue strict-empty**.
+Payload phải chứa retrieval control; `--llm-target empty` tiết kiệm GPU và hybrid local
+giữ nguyên mọi output P2.1r đã thành công. `--k 0` là budget động, không phải 0 table.
 
 ```
 !python /kaggle/working/code/kaggle_codegen.py --payload $PAYLOAD --backend hf \
     --model Qwen/Qwen2.5-Coder-14B-Instruct --load-4bit \
-    --llm-mode select --llm-target all \
-    --out /kaggle/working/codegen_sel14b_factaware.jsonl \
-    --n 1 --temperature 0.7 --k 0 --max-tokens 96 --batch-size 4 \
+    --llm-mode select --llm-target empty \
+    --out /kaggle/working/codegen_sel14b_rescue.jsonl \
+    --n 1 --temperature 0.7 --k 0 \
+    --rescue-no-candidates --rescue-table-k 20 --rescue-min-score 28 \
+    --max-tokens 96 --batch-size 4 \
     --checkpoint-every 32 --time-budget-min 400 --seed 13
 ```
 
@@ -321,15 +478,24 @@ Biến thể:
 | Mục đích | Thêm/đổi cờ |
 |---|---|
 | Bật semantic matching | `--use-dense` (cần `pip install -q sentence-transformers` + `store/label_index/`) |
-| Smoke bắt buộc | thêm `--limit 12 --checkpoint-every 4 --time-budget-min 30 --no-resume`, đổi `--out` sang `codegen_sel14b_factaware_smoke.jsonl` |
+| Smoke bắt buộc | dùng notebook: output riêng `codegen_sel14b_rescue_smoke.jsonl`, `--llm-target all --limit 12 --no-resume` |
 | Bỏ qua câu rule đã chắc | `--rule-first` |
-| Chạy tiếp phiên trước | đặt checkpoint vào đúng `/kaggle/working/codegen_sel14b_factaware.jsonl`, giữ NGUYÊN mọi cờ |
-| OOM | trước hết đổi `--batch-size 2`; chỉ khi vẫn lỗi mới đổi `--k 8` (sẽ tạo signature mới) |
+| Chạy tiếp phiên trước | đặt checkpoint vào đúng `/kaggle/working/codegen_sel14b_rescue.jsonl`, giữ NGUYÊN mọi cờ |
+| OOM | runner tự hạ batch; nếu phải đổi tay batch/k/token, dùng output mới vì run signature sẽ đổi |
 
-Tải `codegen_sel14b_factaware.jsonl` từ tab Output → về local:
+Tải `codegen_sel14b_rescue.jsonl` từ tab Output → về local rồi hybrid, không build/nộp
+fallback trực tiếp:
 
 ```powershell
-python scripts/05_build_submission.py --retrieval artifacts/retrieval.jsonl --codegen <duong_dan>\codegen_sel14b_factaware.jsonl --out-dir artifacts/submission_sel14b_factaware --sub-k 5
+python scripts/11_merge_codegen_hybrid.py `
+  --primary artifacts/codegen_p21r_year_only_v3.jsonl `
+  --fallback <duong_dan>\codegen_sel14b_rescue.jsonl `
+  --out artifacts/codegen_hybrid_p21r_rescue.jsonl `
+  --audit artifacts/codegen_hybrid_p21r_rescue.audit.json
+python scripts/05_build_submission.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/codegen_hybrid_p21r_rescue.jsonl `
+  --out-dir artifacts/submission_hybrid_p21r_rescue --sub-k 5
 ```
 
 ### 5.2 Embed label index (encode-only, ~15 phút)
@@ -387,6 +553,27 @@ Mọi script đã gọi `setup_stdout()` (UTF-8). Nếu vẫn lỗi: `chcp 65001
 | 16.1 | Rule dynamic fact-aware | .4352 | .8805 | **.1522** | .1522 |
 | 16.2 | Rule k=4 pre-fact-aware | .4334 | .8774 | **.1482** | .1482 |
 | 17 | P2.1 Qwen 14B fact-aware, dynamic k | .4406 | .8937 | **.2115** | .2115 |
+| 18 | P2.1r year-only v3, 25 replay | .4426 | .8961 | **.2253** | .2253 |
+| 19 | P2.1r all-types v3, 40 replay | **.4439** | **.8969** | **.2292** | **.2292** |
+
+**#18/#19 xác nhận P2.1r có giá trị thật trên leaderboard.** Với độ phân giải score phù
+hợp public split 506 câu, #17 → #18 tương ứng khoảng **+7 câu đúng ròng**; #18 → #19
+thêm khoảng **+2 câu**, tổng #17 → #19 khoảng **+9 câu**. Đây là suy luận từ score
+aggregate, không tiết lộ ID nào đúng. All-types đồng thời tăng TABLES/DOCS, nên chưa thấy
+trade-off evidence do 15 replay ngoài `year` gây ra.
+
+| Metric đầy đủ | #18 year-only | #19 all-types | #19 − #18 |
+|---|---:|---:|---:|
+| TABLES_F2MACRO | .4426 | **.4439** | +.0013 |
+| TABLES_PRECISION | .2759 | **.2764** | +.0005 |
+| TABLES_RECALL | .6300 | **.6316** | +.0016 |
+| TABLES_MRR5 | .5875 | .5875 | 0 |
+| DOCS_F2MACRO | .8961 | **.8969** | +.0008 |
+| DOCS_PRECISION | .9488 | .9488 | 0 |
+| DOCS_RECALL | .8933 | **.8943** | +.0010 |
+| DOCS_MRR5 | .9654 | .9654 | 0 |
+| ANSWER_ACCURACY | .2253 | **.2292** | +.0039 |
+| EXECUTION_ACCURACY | .2253 | **.2292** | +.0039 |
 
 **#12: 183 final LLM / khoảng 166 placeholder được lấp → net chỉ ~+2 câu đúng.**
 Tỷ lệ marginal thô khoảng 1.1–1.2%, không phải 2%. Nguyên nhân đã audit:
@@ -397,10 +584,10 @@ Chi tiết + hướng sửa: `CLAUDE.md` mục "CHẨN ĐOÁN LƯỢT QWEN #12".
 đúng. Eval dự báo lookup +0.10 nhưng thực tế ≈ 0 ⇒ **lần thứ hai eval dự báo sai**.
 Rule đã tới điểm lợi tức giảm dần: P1.5 +0.026, P1.6 −0.002.
 
-## 7bis. P2.1 — chạy lại Qwen 14B fact-aware (giai đoạn hiện tại)
+## 7bis. P2.1 — cấu hình đã tạo submission #17 (lịch sử tái lập)
 
-Mục tiêu là so với #15 nhưng sửa giao diện evidence: dùng budget động, shortlist theo
-F-slot, hiện ticker/report/year, giữ riêng từng cột năm và ghi rejection taxonomy.
+Phần này giữ nguyên để tái lập #17; **không phải lệnh khuyến nghị cho lượt chạy tiếp**.
+#17 đã dùng budget động, shortlist theo F-slot, ticker/report/year và rejection taxonomy.
 
 | Cờ | #15 control | P2.1 mới |
 |---|---|---|
@@ -437,7 +624,8 @@ Log phải có `payload verified`, `run signature`, `baseline written`, `LLM que
 ```
 
 Không đổi tên output/cờ khi resume. Không copy artifact #15 cũ vào output này vì signature
-và prompt khác. Nếu OOM, runner tự hạ batch; chỉ sửa tay thành `--batch-size 2` nếu cần.
+và prompt khác. Nếu OOM, runner tự hạ batch; mọi thay đổi tay về batch/k/token phải dùng
+output mới vì code hiện tại fingerprint các cờ này.
 
 ### Bước C — QA artifact sau khi download
 
@@ -458,6 +646,113 @@ dòng mới vào bảng §7; không ghi đè điểm #15 hoặc artifact hybrid.
 SHA-256. Các reason chính: `parse_error`, `model_none`, `invalid_selection`,
 `synthesis_error`, `execution_failed`, `semantic_validation_failed`, `answer_mismatch`.
 Trace chỉ là metadata audit, không làm thay đổi answer/query/arbitration.
+
+## 7ter. Lệnh runnable hiện có — frozen #19 → rescue-v1 control → hybrid
+
+### Bước 1 — frozen control zero-GPU
+
+Giữ `artifacts/codegen_p21r_all_v3.jsonl` và submission #19 làm control bất biến:
+`752 kept / 40 replayed / 220 unresolved`, ANSWER/EXEC `.2292`. Year-only #18 chỉ còn là
+ablation bảo thủ để phân rã 25 year so với 15 replay ngoài year.
+
+### Bước 2 — P2.4 nếu có thời gian, không còn block implementation
+
+Làm theo §2.8 và `P2_4_LABELING_GUIDE.md`. Không dùng locked để chọn
+`rescue-table-k`, `rescue-min-score`, prompt hoặc checkpoint. Nếu chưa gán đủ tune, có
+thể chạy smoke/control và triển khai V2 theo §7quater, nhưng không tune threshold/policy
+theo public leaderboard nhiều lần.
+
+### Bước 3 — dựng/upload payload control
+
+```powershell
+python scripts/04_make_kaggle_payload.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --dataset-id lequangkhai5122005/vifinqa-payload
+kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip `
+  -m "P2.1r frozen-scorer rescue-empty"
+```
+
+Manifest phải là schema 4, fuzzy scorer `difflib.SequenceMatcher` version 1. Import
+`kaggle/vifinqa-codegen.ipynb`; smoke dùng `all` trên 12 câu để test đường LLM, còn full
+run dùng đúng:
+
+```text
+!python /kaggle/working/code/kaggle_codegen.py --payload $PAYLOAD --backend hf \
+    --model Qwen/Qwen2.5-Coder-14B-Instruct --load-4bit \
+    --llm-mode select --llm-target empty \
+    --out /kaggle/working/codegen_sel14b_rescue.jsonl \
+    --n 1 --temperature 0.7 --k 0 \
+    --rescue-no-candidates --rescue-table-k 20 --rescue-min-score 28 \
+    --max-tokens 96 --batch-size 4 \
+    --checkpoint-every 32 --time-budget-min 400 --seed 13
+```
+
+Không dùng smoke làm checkpoint cho full vì target khác nên run signature khác. Resume
+full chỉ dùng đúng output full và giữ nguyên cả `batch-size`, `checkpoint-every`, `limit`;
+ba cờ này cũng được fingerprint vì chúng thay đổi thứ tự RNG khi sampling.
+
+### Bước 4 — hybrid bảo thủ và build submission
+
+```powershell
+python scripts/11_merge_codegen_hybrid.py `
+  --primary artifacts/codegen_p21r_all_v3.jsonl `
+  --fallback <path>\codegen_sel14b_rescue.jsonl `
+  --out artifacts/codegen_hybrid_p21r_rescue.jsonl `
+  --audit artifacts/codegen_hybrid_p21r_rescue.audit.json
+
+python scripts/05_build_submission.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/codegen_hybrid_p21r_rescue.jsonl `
+  --out-dir artifacts/submission_hybrid_p21r_rescue --sub-k 5
+```
+
+QA bắt buộc: 1.012 ID duy nhất, finite answer, mọi expression compile/replay, audit hybrid
+chỉ thay structural-none, và retrieval hash trùng control. Lượt này là **Selection v1
+rescue control**; Structured Selection v2 được phát triển/đo riêng theo §7quater.
+
+## 7quater. Quyết định sau #18/#19 — GO Structured Selection v2 typed nested IR
+
+Kết quả #18/#19 đã thỏa evidence gate để **bắt đầu triển khai P2.2**, dù P2.4 chưa được
+gán nhãn. P2.4 vẫn hữu ích để tune/so sánh theo loại câu, nhưng không còn là blocker cho
+việc xây compiler và chạy ablation bảo thủ. Không dùng locked set để lặp thiết kế.
+
+Lý do:
+
+- flat typed replay #17 → #19 tăng khoảng 9/506 câu đúng và không làm metric nào giảm;
+- 15 replay ngoài `year` của #19 tăng thêm khoảng 2 câu so với #18;
+- #19 còn đúng **220 structural-none**: 142 `no_candidates` và 78 `rejected` đã có
+  candidate. Trong 78 rejected có 55 output non-year phù hợp để thử nested IR; 23 year
+  còn lại chủ yếu là period/alias linking, không nên ép qua AST;
+- rescue tìm candidate cho 107/142 `no_candidates`, nhưng chỉ 48/142 phủ đủ mọi fact
+  slot hiện tại; 59 câu còn thiếu slot và 35 câu vẫn rỗng.
+
+Phạm vi P2.2 tiếp theo:
+
+1. **Atomic metric-slot planner:** tách role `filter`, `rank`, `project`, `numerator`,
+   `denominator`, `base`, `end` theo ticker/year trước khi shortlist. Hiện toàn bộ 1.037
+   fact record của 220 câu đều chỉ có role `value`, nên generic AST một mình chưa đủ.
+2. **P2.2b atomic bindings:** model bind candidate ổn định vào fact có tên/kiểu; leaf
+   chứa candidate index/constant ID và provenance, không chứa pandas.
+3. **P2.2c nested tree:** compiler xác định cho `filter/compare`, arithmetic/ratio/growth,
+   `argmax/argmin` + projection, `count/sum/average`; giới hạn depth/node và exact arity.
+4. Mọi node phải qua type, unit, entity/year alignment, stable-cell uniqueness, evidence
+   grounding, finite-answer và execution replay. Fail thì giữ nguyên #19.
+
+Thiết kế ablation bắt buộc:
+
+- **A — frozen control:** #19 all-types v3;
+- **A1 — v1 rescue control:** chạy cấu hình Selection v1 đã có, lưu trace theo đúng nhóm
+  failure; không trộn score này với V2;
+- **B — V2 rejected non-year:** chỉ cho phép thay 55 structural-none có candidate và
+  output không phải year, giữ bitwise 792 output thành công;
+- **C — V2 + rescue fact-complete:** sau B mới mở trước 48 no-candidate đã được rescue và
+  phủ đủ fact slot; 59 partial-slot và 35 shortlist rỗng tiếp tục giữ placeholder.
+
+Không chạy V2 trên toàn bộ 1.012 câu và không ghi đè rule/Selection đang thành công. Khi
+chưa có P2.4, nếu accepted IR ≤40 thì review toàn bộ; nếu lớn hơn thì review ít nhất 30
+mẫu phân tầng và mọi edge/failure. Chỉ dùng leaderboard cho một ablation đã freeze, không
+lặp threshold theo public score. Lệnh chạy sẽ chỉ được thêm sau
+khi implementation/tests hoàn tất; hiện §7quater là quyết định thiết kế, không phải command.
 
 ## 8. Hiệu chuẩn eval offline ↔ leaderboard (QUAN TRỌNG)
 

@@ -38,6 +38,38 @@ from .semantic import (
 _SELECTION_TRACE_SCHEMA = 1
 _SELECTION_RAW_MAX_CHARS = 2_000
 _SELECTION_REASON_MAX_CHARS = 500
+_LLM_ATTEMPT_STATUS_FIELD = "llm_attempt_status"
+_LLM_ATTEMPT_COMPLETED = "completed"
+_LEGACY_COMPLETED_SELECTION_OUTCOMES = {
+    "accepted", "rejected", "no_candidates", "no_samples",
+}
+
+
+def _mark_llm_attempt_completed(row: dict) -> dict:
+    """Mark a record only after its configured LLM attempt is complete.
+
+    The final answer may still come from a deterministic rule after
+    arbitration, so ``source`` cannot be used as an attempt/completion flag.
+    """
+    row[_LLM_ATTEMPT_STATUS_FIELD] = _LLM_ATTEMPT_COMPLETED
+    return row
+
+
+def _has_completed_llm_attempt(row: dict) -> bool:
+    """Recognize new markers plus exact-run legacy checkpoints.
+
+    Selection traces were persisted before the explicit completion marker was
+    introduced and are sufficient evidence that a response group was fully
+    processed.  ``source=llm*`` remains a compatibility path for older code
+    mode checkpoints.
+    """
+    if row.get(_LLM_ATTEMPT_STATUS_FIELD) == _LLM_ATTEMPT_COMPLETED:
+        return True
+    trace = row.get("selection_trace")
+    if (isinstance(trace, dict)
+            and trace.get("outcome") in _LEGACY_COMPLETED_SELECTION_OUTCOMES):
+        return True
+    return str(row.get("source", "")).startswith("llm")
 
 
 def _effective_table_k(route: dict, k: int) -> int:
@@ -55,30 +87,65 @@ def _effective_table_k(route: dict, k: int) -> int:
 
 class QuestionBundle:
     def __init__(self, rec: dict, store: Store, k: int = CODEGEN_K,
-                 run_signature: str = ""):
+                 run_signature: str = "", rescue_no_candidates: bool = False,
+                 rescue_table_k: int = 20, rescue_min_score: float = 28.0):
         self.id = rec["id"]
         self.question = rec["question"]
         self.route = rec["route"]
         self.run_signature = run_signature
         self.evidence_k = _effective_table_k(self.route, k)
-        self.cands = rec["candidates"][:self.evidence_k]
+        self.rescue_no_candidates = bool(rescue_no_candidates)
+        self.rescue_table_k = max(self.evidence_k, int(rescue_table_k))
+        self.rescue_min_score = float(rescue_min_score)
+        self._store = store
+        self._all_cands = list(rec.get("candidates") or [])
+        self._candidate_rank = {
+            (str(c.get("report_id", "")), int(c.get("table_pos", -1))): i
+            for i, c in enumerate(self._all_cands, start=1)
+        }
+        self._loaded_table_keys: set[tuple[str, int]] = set()
+        self.cands: list[dict] = []
         self.tables: list[dict] = []
         self._shortlists = {}
         self.dfs: dict = {}
+        self.shortlist_trace = {
+            "rescue_enabled": self.rescue_no_candidates,
+            "rescue_applied": False,
+            "strict_table_count": 0,
+            "rescue_table_count": 0,
+            "candidate_count": 0,
+            "rescue_mode": "none",
+        }
+        self._load_candidates(self._all_cands[:self.evidence_k])
+        self.shortlist_trace["strict_table_count"] = len(self.tables)
+
+    def _load_candidates(self, candidates: list[dict]) -> None:
+        """Append retrieval tables while preserving their original df rank."""
+        fresh = []
+        for c in candidates:
+            key = (str(c.get("report_id", "")), int(c.get("table_pos", -1)))
+            if key not in self._loaded_table_keys:
+                fresh.append(c)
+                self._loaded_table_keys.add(key)
+        if not fresh:
+            return
         by_ticker: dict[str, list[dict]] = {}
-        for c in self.cands:
+        for c in fresh:
             by_ticker.setdefault(c["ticker"], []).append(c)
         meta_lookup = {}
         for ticker, cs in by_ticker.items():
-            tdf = store.tables_of(ticker, list({c["report_id"] for c in cs}))
+            tdf = self._store.tables_of(
+                ticker, list({c["report_id"] for c in cs}),
+            )
             for m in tdf.to_dict("records"):
                 meta_lookup[(m["report_id"], int(m["table_pos"]))] = m
-        for i, c in enumerate(self.cands, start=1):
+        for c in fresh:
             m = meta_lookup.get((c["report_id"], int(c["table_pos"])))
             if m is None:
                 continue
             csv_text = tidy_csv_text(m)
-            var = f"df{i}"
+            rank = self._candidate_rank[(c["report_id"], int(c["table_pos"]))]
+            var = f"df{rank}"
             us = m.get("unit_scale")
             us = None if (us is None or us != us) else float(us)
             self.tables.append({
@@ -89,6 +156,7 @@ class QuestionBundle:
                 "report_year": int(m["year"]), "csv_text": csv_text,
             })
             self.dfs[var] = df_roundtrip(csv_text)
+            self.cands.append(c)
 
     def shortlist(self, encoder=None, top_n: int = 8):
         """Row-level schema linking (P1.1): pre-match candidate cells so the
@@ -97,10 +165,40 @@ class QuestionBundle:
         if key not in self._shortlists:
             variants = self.route.get("metric_variants") or [self.route.get("metric_norm", "")]
             plan = self.route.get("plan") or {}
-            self._shortlists[key] = build_shortlist(
+            strict = build_shortlist(
                 self.tables, variants, self.route.get("years") or [],
                 top_n=top_n, encoder=encoder,
                 facts=plan.get("facts") or None)
+            result = strict
+            if not strict and self.rescue_no_candidates:
+                self._load_candidates(self._all_cands[:self.rescue_table_k])
+                widened_strict = build_shortlist(
+                    self.tables, variants, self.route.get("years") or [],
+                    top_n=top_n, encoder=encoder,
+                    facts=plan.get("facts") or None,
+                )
+                result = widened_strict
+                rescue_mode = "widen_strict"
+                if not result:
+                    result = build_shortlist(
+                        self.tables, variants, self.route.get("years") or [],
+                        top_n=top_n, encoder=encoder,
+                        min_score=self.rescue_min_score,
+                        facts=plan.get("facts") or None,
+                        schema_rescue=True,
+                    )
+                    rescue_mode = "schema_2d" if result else "still_empty"
+                self.shortlist_trace.update({
+                    "rescue_applied": True,
+                    "rescue_table_count": len(self.tables),
+                    "candidate_count": len(result),
+                    "rescue_min_score": self.rescue_min_score,
+                    "widened_strict_candidate_count": len(widened_strict),
+                    "rescue_mode": rescue_mode,
+                })
+            else:
+                self.shortlist_trace["candidate_count"] = len(result)
+            self._shortlists[key] = result
         return self._shortlists[key]
 
     def select_messages(self, encoder=None) -> list[dict]:
@@ -189,7 +287,10 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
                 checkpoint_every: int = 32, resume: bool = True,
                 time_budget_s: float = 0.0, run_signature: str = "",
                 use_dense: bool = False, dense_model: str = "",
-                llm_target: str = "all", llm_mode: str = "code") -> None:
+                llm_target: str = "all", llm_mode: str = "code",
+                rescue_no_candidates: bool = False,
+                rescue_table_k: int = 20,
+                rescue_min_score: float = 28.0) -> None:
     """Crash-safe codegen.
 
     Order of operations (important on Kaggle where a session can die at any time):
@@ -200,9 +301,11 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
          better answers, flushing after every chunk
       4. stop cleanly when `time_budget_s` is exceeded (keeps what it has)
 
-    resume=True picks up an existing out_path and skips ids already answered by
-    the LLM (source startswith 'llm'). When run_signature is non-empty, only
-    records produced by the exact same semantic run configuration are reused.
+    resume=True picks up an existing out_path and skips ids whose configured
+    LLM attempt completed.  Completion is independent of the final source: an
+    accepted Selection answer may still lose arbitration to a rule, and a
+    rejected attempt intentionally keeps the baseline.  A record is reused
+    only when its run_signature exactly matches this run.
     """
     t_start = time.time()
     store = Store(store_dir, cache_size=4)
@@ -219,7 +322,16 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
     bundles, results = [], {}
     print(f"building {len(recs)} bundles...", flush=True)
     for rec in recs:
-        b = QuestionBundle(rec, store, k, run_signature=run_signature)
+        bundle_kwargs = {"run_signature": run_signature}
+        # Preserve the historical constructor call for test doubles and local
+        # callers unless the opt-in rescue experiment is explicitly enabled.
+        if rescue_no_candidates:
+            bundle_kwargs.update({
+                "rescue_no_candidates": True,
+                "rescue_table_k": rescue_table_k,
+                "rescue_min_score": rescue_min_score,
+            })
+        b = QuestionBundle(rec, store, k, **bundle_kwargs)
         if not b.tables:
             results[b.id] = _empty_result(b, "no candidate tables")
             continue
@@ -229,21 +341,30 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
     prev = _load_previous(out_path) if resume else {}
     already = {
         qid for qid, r in prev.items()
-        if str(r.get("source", "")).startswith("llm")
-        and (not run_signature or r.get("run_signature") == run_signature)
+        if r.get("run_signature") == run_signature
+        and _has_completed_llm_attempt(r)
     }
     if already:
-        print(f"resume: {len(already)} questions already solved by the LLM", flush=True)
-    elif prev and run_signature:
-        print("resume: previous output exists but has a different/missing run "
-              "signature; its LLM answers will not be reused", flush=True)
+        print(f"resume: {len(already)} LLM attempts already completed", flush=True)
+    elif prev:
+        same_signature = sum(
+            r.get("run_signature") == run_signature for r in prev.values()
+        )
+        if same_signature:
+            print("resume: matching output exists but has no completed LLM "
+                  "attempts; pending attempts will run", flush=True)
+        else:
+            print("resume: previous output exists but has a different/missing "
+                  "run signature; its LLM attempts will not be reused", flush=True)
 
     # ---------- step 2: rule baseline for everything, flush immediately ----------
     print(f"rule baseline over {len(bundles)} questions...", flush=True)
     rule_conf, rule_answers = {}, {}
     for b in bundles:
         if b.id in already:                     # keep the better LLM answer
-            results[b.id] = prev[b.id]
+            # Upgrade legacy exact-signature checkpoints (selection_trace or
+            # source=llm*) to the explicit marker as they are rewritten.
+            results[b.id] = _mark_llm_attempt_completed(dict(prev[b.id]))
             rule_conf[b.id] = 0.0
             continue
         r = _rule_result(b, encoder) if use_rule_fallback else None
@@ -321,6 +442,7 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
                 rec, trace = _selection_result(
                     b, samples, encoder, return_trace=True,
                 )
+                trace["shortlist"] = dict(b.shortlist_trace)
                 trace_outcomes[trace.get("outcome", "unknown")] += 1
                 trace_rejections.update(trace.get("rejection_counts") or {})
                 if rec is not None:
@@ -331,7 +453,7 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
                     # why none of the model samples was usable.
                     out = results[b.id]
                 out["selection_trace"] = trace
-                results[b.id] = out
+                results[b.id] = _mark_llm_attempt_completed(out)
             _flush(out_path, recs, results)
             dt, elapsed = time.time() - t0, time.time() - t_start
             print(f"[chunk {ci+1}/{n_chunks}] {len(part)}q in {dt/60:.1f}min | "
@@ -351,8 +473,9 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
                 llm_rec = _final(b, win["answer"], win["code"], "llm",
                                  votes=win["votes"], n_ok=win["n_ok"],
                                  semantic=win.get("semantic"))
-                results[b.id] = _arbitrated(b, rule_answers.get(b.id), llm_rec,
-                                            win.get("votes", 1), n_samples)
+                out = _arbitrated(b, rule_answers.get(b.id), llm_rec,
+                                  win.get("votes", 1), n_samples)
+                results[b.id] = _mark_llm_attempt_completed(out)
             else:
                 err = next((r["error"] for _c, r in sr if r["error"]), "no output")
                 debug_queue.append((b, sr[0][0] if sr else "", err))
@@ -388,12 +511,17 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
                         b, round(r["value"], 2), code, "llm_debug",
                         semantic=r.get("semantic"),
                     )
-                    results[b.id] = _arbitrated(b, rule_answers.get(b.id),
-                                                llm_rec, 1, 1)
+                    out = _arbitrated(b, rule_answers.get(b.id), llm_rec, 1, 1)
+                    results[b.id] = _mark_llm_attempt_completed(out)
                 else:
                     nxt.append((b, code or old_code, r["error"] or "no output"))
             debug_queue = nxt
-        # questions the LLM could not fix keep their rule-baseline entry
+        # Questions the LLM could not fix keep their rule-baseline entry, but
+        # their configured attempt is complete after all debug rounds.  If a
+        # debug backend call raises, control never reaches this marker and they
+        # remain correctly pending for resume.
+        for b, _code, _err in debug_queue:
+            _mark_llm_attempt_completed(results[b.id])
 
         _flush(out_path, recs, results)
         dt, elapsed = time.time() - t0, time.time() - t_start

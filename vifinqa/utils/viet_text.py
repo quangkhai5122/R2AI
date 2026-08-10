@@ -1,19 +1,27 @@
-"""Vietnamese text normalization + lightweight fuzzy matching.
+"""Vietnamese text normalization + deterministic fuzzy matching.
 
-rapidfuzz is used when available; otherwise a difflib fallback keeps the
-pipeline dependency-light.
+The scorer is deliberately pinned to the standard-library implementation.
+Previously, merely installing ``rapidfuzz`` changed shortlist scores while the
+source code and payload hashes stayed identical.  Kaggle P2.1 used the
+``difflib`` path, so keeping that algorithm as an explicit versioned contract
+both reproduces the submitted run and removes optional-dependency drift.
 """
 from __future__ import annotations
 
+import difflib
 import re
 import unicodedata
 
-try:
-    from rapidfuzz import fuzz as _rf_fuzz
-    _HAS_RF = True
-except ImportError:  # pragma: no cover
-    import difflib
-    _HAS_RF = False
+FUZZY_SCORER_BACKEND = "difflib.SequenceMatcher"
+FUZZY_SCORER_VERSION = "1"
+
+
+def fuzzy_scorer_provenance() -> dict[str, str]:
+    """Return the semantic scorer contract fingerprinted by Kaggle runs."""
+    return {
+        "backend": FUZZY_SCORER_BACKEND,
+        "version": FUZZY_SCORER_VERSION,
+    }
 
 _NON_ALNUM = re.compile(r"[^0-9a-z\s/%]")
 _MULTI_WS = re.compile(r"\s+")
@@ -61,8 +69,6 @@ def fuzz_token_set(a: str, b: str) -> float:
     a, b = norm(a), norm(b)
     if not a or not b:
         return 0.0
-    if _HAS_RF:
-        return float(_rf_fuzz.token_set_ratio(a, b))
     sa, sb = " ".join(sorted(set(a.split()))), " ".join(sorted(set(b.split())))
     return 100.0 * difflib.SequenceMatcher(None, sa, sb).ratio()
 
@@ -78,12 +84,9 @@ def label_metric_score(label: str, metric: str) -> float:
     if not lt or not mt:
         return 0.0
     cov = len(lt & mt) / len(mt)
-    if _HAS_RF:
-        sort = float(_rf_fuzz.token_sort_ratio(norm(label), norm(metric)))
-    else:
-        sa = " ".join(sorted(norm(label).split()))
-        sb = " ".join(sorted(norm(metric).split()))
-        sort = 100.0 * difflib.SequenceMatcher(None, sa, sb).ratio()
+    sa = " ".join(sorted(norm(label).split()))
+    sb = " ".join(sorted(norm(metric).split()))
+    sort = 100.0 * difflib.SequenceMatcher(None, sa, sb).ratio()
     return 60.0 * cov + 0.4 * sort
 
 
@@ -91,6 +94,4 @@ def fuzz_partial(a: str, b: str) -> float:
     a, b = norm(a), norm(b)
     if not a or not b:
         return 0.0
-    if _HAS_RF:
-        return float(_rf_fuzz.partial_ratio(a, b))
     return 100.0 * difflib.SequenceMatcher(None, a, b).ratio()

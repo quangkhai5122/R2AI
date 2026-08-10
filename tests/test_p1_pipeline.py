@@ -5,7 +5,7 @@ import unittest
 import pandas as pd
 
 from vifinqa.codegen.formulas import REGISTRY, describe_for_prompt, get
-from vifinqa.codegen.generate import _effective_table_k
+from vifinqa.codegen.generate import QuestionBundle, _effective_table_k
 from vifinqa.codegen.units import (check_answer_unit, cell_is_already_percent,
                                    percent_from_cell)
 from vifinqa.retrieval.shortlist import build_shortlist, render_shortlist
@@ -178,6 +178,22 @@ class ShortlistTests(unittest.TestCase):
                                 facts=facts)
         self.assertEqual({c.fact_ticker for c in cands}, {"AAA", "BBB"})
 
+    def test_schema_rescue_can_match_a_metric_in_the_column_name(self):
+        rows = [{"row": 1, "label": "Giá trị còn lại", "code": "",
+                 "col": 1, "col_name": "Quyền sử dụng đất", "value": 8.0,
+                 "unit_scale": 1e6}]
+        tables = [{"var": "df1", "report_id": "MBB_2018", "table_pos": 1,
+                   "csv_text": pd.DataFrame(rows).to_csv(index=False)}]
+        strict = build_shortlist(tables, ["quyen su dung dat"], top_n=4)
+        rescued = build_shortlist(
+            tables, ["quyen su dung dat"], top_n=4, min_score=28.0,
+            schema_rescue=True,
+        )
+        self.assertEqual(strict, [])
+        self.assertEqual(len(rescued), 1)
+        self.assertTrue(rescued[0].rescue)
+        self.assertEqual(rescued[0].col_name, "Quyền sử dụng đất")
+
 
 class DynamicEvidencePolicyTests(unittest.TestCase):
     def test_zero_uses_route_budget_and_positive_k_stays_fixed(self):
@@ -188,6 +204,57 @@ class DynamicEvidencePolicyTests(unittest.TestCase):
     def test_negative_k_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "k must be >= 0"):
             _effective_table_k({"evidence_budget": 8}, -1)
+
+    def test_bundle_widens_only_after_the_strict_shortlist_is_empty(self):
+        class FakeStore:
+            def __init__(self, records):
+                self.records = pd.DataFrame(records)
+
+            def tables_of(self, ticker, report_ids=None):
+                out = self.records[self.records["ticker"] == ticker]
+                if report_ids is not None:
+                    out = out[out["report_id"].isin(report_ids)]
+                return out
+
+        def meta(report_id, table_pos, grid):
+            import json
+            return {
+                "ticker": "AAA", "report_id": report_id,
+                "table_pos": table_pos, "year": 2024,
+                "grid_json": json.dumps(grid, ensure_ascii=False),
+                "unit_scale": 1e6, "unit_source": "test",
+            }
+
+        records = [
+            meta("AAA_R1", 1, [["Chỉ tiêu", "2024"], ["Khoản khác", "100"]]),
+            meta("AAA_R2", 2, [["Chỉ tiêu", "Quyền sử dụng đất"],
+                                ["Giá trị còn lại", "2000"]]),
+        ]
+        rec = {
+            "id": 1, "question": "Quyền sử dụng đất là bao nhiêu?",
+            "route": {
+                "metric_variants": ["quyen su dung dat"], "years": [],
+                "plan": {}, "evidence_budget": 1,
+            },
+            "candidates": [
+                {"ticker": "AAA", "report_id": "AAA_R1", "table_pos": 1},
+                {"ticker": "AAA", "report_id": "AAA_R2", "table_pos": 2},
+            ],
+        }
+        strict = QuestionBundle(rec, FakeStore(records), k=1)
+        self.assertEqual(strict.shortlist(top_n=4), [])
+        self.assertEqual(len(strict.tables), 1)
+
+        rescued = QuestionBundle(
+            rec, FakeStore(records), k=1, rescue_no_candidates=True,
+            rescue_table_k=2, rescue_min_score=28.0,
+        )
+        candidates = rescued.shortlist(top_n=4)
+        self.assertTrue(candidates)
+        self.assertTrue(rescued.shortlist_trace["rescue_applied"])
+        self.assertEqual(rescued.shortlist_trace["rescue_mode"], "schema_2d")
+        self.assertEqual(len(rescued.tables), 2)
+        self.assertEqual(candidates[0].report_id, "AAA_R2")
 
 
 if __name__ == "__main__":

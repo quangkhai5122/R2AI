@@ -1,9 +1,15 @@
-# ViFinQA — Giai đoạn 0: Hạ tầng & Baseline Pipeline
+# ViFinQA — pipeline hiện hành
 
-Triển khai chiến lược trong `ViFinQA_Claude_Strategy.md`:
-**structured lookup → BM25 trong báo cáo đã khoá → Text-to-Pandas (Qwen2.5-Coder-7B trên Kaggle) → semantic guard/self-debug → submission.zip**
+> Lệnh vận hành và artifact chuẩn nằm trong `RUNBOOK.md`. Nếu ví dụ lịch sử ở tài liệu
+> khác mâu thuẫn, luôn theo RUNBOOK.
 
-Phần **CPU chạy local** (máy bạn), phần **GPU chạy Kaggle** (baseline 7B NF4). Hai bên trao đổi qua payload có manifest SHA-256 và `codegen_results.jsonl`.
+Pipeline hiện tại:
+**structured routing → BM25 trong báo cáo đã khoá → rule/fact-aware shortlist →
+Qwen2.5-Coder-14B chọn Selection JSON → compiler/semantic guard → hybrid → submission.zip**
+
+Phần **CPU chạy local**, phần **GPU chạy Kaggle** (14B NF4/HF). Hai bên trao đổi qua
+payload schema 4 có manifest SHA-256, fuzzy-scorer contract và codegen JSONL có
+`run_signature`/checkpoint hoàn tất-attempt.
 
 ```
 Local (CPU)                                Kaggle (GPU T4 x2)
@@ -12,9 +18,10 @@ Local (CPU)                                Kaggle (GPU T4 x2)
 02_retrieve.py       router + BM25         
 03_rule_baseline.py  baseline KHÔNG cần GPU
 04_make_kaggle_payload.py ──► upload ────► vifinqa-codegen.ipynb
-                                           (Qwen2.5-Coder-7B + NF4/HF
-                                            + semantic guard + self-debug)
-05_build_submission.py ◄─── download ◄──── codegen_results.jsonl
+                                           (Qwen2.5-Coder-14B + NF4/HF
+                                            + Selection + semantic guard)
+11_merge_codegen_hybrid.py ◄ download ◄──── codegen_sel14b_rescue.jsonl
+05_build_submission.py
         │
         ▼
   submission.zip (results.json + data/*.csv)
@@ -57,9 +64,14 @@ python scripts/05_build_submission.py
 
 ### 2.2. Upload payload
 ```powershell
-python scripts/04_make_kaggle_payload.py --dry-run --dataset-id lequangkhai5122005/vifinqa-payload
-python scripts/04_make_kaggle_payload.py --dataset-id lequangkhai5122005/vifinqa-payload
-kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip -m "P0 crash-safe runner, manifest schema v2"
+python scripts/04_make_kaggle_payload.py --dry-run `
+  --retrieval artifacts/retrieval.jsonl `
+  --dataset-id lequangkhai5122005/vifinqa-payload
+python scripts/04_make_kaggle_payload.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --dataset-id lequangkhai5122005/vifinqa-payload
+kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip `
+  -m "P2.1r frozen-scorer rescue-empty"
 ```
 Lệnh `version` ở trên dành cho dataset đã có ID `lequangkhai5122005/vifinqa-payload`.
 Chỉ dùng `kaggle datasets create` khi tạo dataset lần đầu. Không dùng CLI thì mở
@@ -75,21 +87,30 @@ Builder giữ lại dataset ID cũ và sinh `payload-manifest.json`; notebook t�
 3. Chạy lần lượt các cell (notebook yêu cầu đúng một payload, kiểm manifest rồi copy nguyên trạng code sang `/kaggle/working`):
    - cài `transformers accelerate bitsandbytes` (~1–2 phút)
    - **smoke test 12 câu** — kiểm tra output trước
-   - **full run** (`--n 1 --temperature 0 --k 4 --max-tokens 256`; runner ghi baseline trước và checkpoint theo chunk)
-   - trước khi để full run tiếp tục, log phải có lần lượt `payload verified: schema=2`,
-     `run signature: ...`, `baseline written (...)`, `LLM queue: ...`, rồi
+   - **full run** (`select/empty`, dynamic `--k 0`, rescue 20/28; runner ghi baseline trước và checkpoint theo chunk)
+   - trước khi để full run tiếp tục, log phải có lần lượt `payload verified: schema=4`,
+     `fuzzy scorer: backend=difflib.SequenceMatcher version=1`, `run signature: ...`,
+     `baseline written (...)`, `LLM queue: ...`, rồi
      `[chunk 1/...]`. Nếu vẫn thấy `LLM round 1: 1012 prompts`, bạn đang chạy
      notebook hoặc payload cũ: dừng phiên, gỡ input cũ và attach version mới.
 4. **Backend là transformers, KHÔNG phải vLLM.** vLLM bản mới (V1 engine) không khởi động được trên T4 (Turing/SM75) — lỗi `Engine core initialization failed` — và engine V0 hỗ trợ T4 đã bị xoá khỏi vLLM. Notebook dùng `--backend hf`: chậm hơn nhưng chạy chắc. Muốn thử vLLM thì pin `vllm==0.7.3` (`--backend vllm`, xem cell cuối notebook).
-5. Model mặc định `Qwen/Qwen2.5-Coder-7B-Instruct` + 4-bit NF4. Giữ nguyên 7B
-   cho lượt baseline có kiểm soát; chỉ thử 14B sau khi 7B đã có score và còn ngân sách GPU.
-6. Tải `codegen_results.jsonl` từ tab **Output** về máy.
+5. Model cho lượt hiện tại là `Qwen/Qwen2.5-Coder-14B-Instruct` + 4-bit NF4;
+   smoke dùng target `all`, file riêng, còn full dùng target `empty`.
+6. Tải `codegen_sel14b_rescue.jsonl` từ tab **Output** về máy.
 
 Chạy nền không cần giữ tab: **Save Version → Save & Run All (Commit)** — kết quả nằm trong tab Output của version.
 
 ### 2.4. Về local, đóng gói nộp
 ```powershell
-python scripts/05_build_submission.py --codegen <thư_mục_tải_về>\codegen_results.jsonl
+python scripts/11_merge_codegen_hybrid.py `
+  --primary artifacts/codegen_p21r_year_only_v3.jsonl `
+  --fallback <thư_mục_tải_về>\codegen_sel14b_rescue.jsonl `
+  --out artifacts/codegen_hybrid_p21r_rescue.jsonl `
+  --audit artifacts/codegen_hybrid_p21r_rescue.audit.json
+python scripts/05_build_submission.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/codegen_hybrid_p21r_rescue.jsonl `
+  --out-dir artifacts/submission_hybrid_p21r_rescue --sub-k 5
 ```
 
 ### 2.5. Troubleshooting Kaggle
@@ -97,9 +118,9 @@ python scripts/05_build_submission.py --codegen <thư_mục_tải_về>\codegen_
 |---|---|
 | `Engine core initialization failed` (vLLM) | V1 engine không chạy trên T4 → dùng `--backend hf` (mặc định notebook) |
 | `unexpected keyword argument 'swap_space'` | đã fix: `VllmBatchClient` tự drop kwarg vLLM không nhận |
-| CUDA OOM | HF runner tự giảm batch `4→2→1`; nếu batch 1 vẫn OOM, giảm `--max-input-tokens`, `--k` hoặc `--max-tokens` |
+| CUDA OOM | HF runner tự giảm batch `4→2→1`; đổi tay batch/k/token sẽ đổi run signature, nên dùng output mới |
 | Tải model chậm / hết disk | dùng 7B thay 14B; xoá `/root/.cache/huggingface` giữa các lần |
-| Hết phiên | checkpoint luôn đủ 1.012 dòng; chạy lại cùng `--out`, payload và cấu hình để resume. Phiên Kaggle mới phải copy checkpoint cũ thành `/kaggle/working/codegen_results.jsonl` trước; lệch `run_signature` sẽ không tái dùng LLM answer cũ |
+| Hết phiên | checkpoint luôn đủ 1.012 dòng; chạy lại cùng `--out`, payload và toàn bộ cờ để resume. Marker completed-attempt giúp không gọi lại cả các Selection đã reject/giữ rule |
 | Log `LLM round 1: 1012 prompts` | notebook/payload cũ, chưa có chunk runner → upload dataset version mới, import lại notebook hiện hành và chỉ attach đúng một payload |
 | Kết quả toàn `source=rule` | LLM chưa sinh được code chạy được → tăng `--max-tokens`, xem log |
 | Muốn model khác | `--model Qwen/Qwen2.5-Coder-14B-Instruct --load-4bit`, `microsoft/phi-4` (verifier giai đoạn 1) |
@@ -125,7 +146,10 @@ In ra P/R/F2 macro, Answer Acc, Exec Acc. Bộ synthetic hiện dùng cùng pars
 4. Warning `gold=506 pred=1012` vô hại — BTC chấm 506 câu trong số 1012; nộp đủ vẫn phủ hết gold.
 5. TABLES_RECALL trong-doc ≈ 0.82 (0.684/0.834): ~18% bảng gold (đa phần thuyết minh) chưa vào top-10 → mục tiêu của Giai đoạn 1 (BGE-M3 + reranker trong scope đã khoá).
 
-**Trạng thái các trục điểm:** DOCS (0.84 F2) tốt; TABLES đang tối ưu k + ranking; ANSWER/EXEC (0.085) là trần của rule-baseline — **chạy Kaggle LLM là đòn bẩy lớn nhất hiện tại**.
+**Trạng thái hiện tại:** submission #19 P2.1r all-types v3 đạt TABLES_F2 `.4439`,
+DOCS_F2 `.8969` và ANSWER/EXEC `.2292`, cao nhất hiện tại. #18 year-only v3 đạt
+`.4426/.8961/.2253`. Đã GO Structured Selection v2 typed nested IR theo RUNBOOK
+§7quater, nhưng chưa triển khai; giữ #19 làm frozen control.
 
 `--k` của codegen là số bảng đưa vào prompt (baseline Kaggle hiện dùng 4 để giảm
 prefill/OOM). `--sub-k` khi build submission là số bảng nộp cho grader (giữ 5 theo
