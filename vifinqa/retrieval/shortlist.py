@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, asdict
 
+from ..finance.metrics import code_expectation, expand_metric_variants
 from ..router.metric_phrase import has_qualifier
 from ..utils.viet_text import label_metric_score, norm
 from .serialize import df_roundtrip
@@ -50,7 +51,7 @@ def build_shortlist(tables: list[dict], metric_variants: list[str],
     Returns the best `top_n` (label, column) cells across all tables, sorted by
     descending score. One entry per (table, label, chosen column).
     """
-    metric_variants = [m for m in metric_variants if m]
+    metric_variants = expand_metric_variants(m for m in metric_variants if m)
     if not metric_variants:
         return []
     want_qual = _qualifiers_in(metric_variants[0])
@@ -99,7 +100,7 @@ def build_shortlist(tables: list[dict], metric_variants: list[str],
             # VAS line code is far more stable than OCR'd Vietnamese text:
             # it separates "Lợi nhuận sau thuế" (code 60, income statement) from
             # "Lợi nhuận sau thuế chưa phân phối" (code 421, balance sheet).
-            score += _code_bonus(code, metric_variants)
+            score += _code_bonus(code, metric_variants, label)
             if score < min_score:      # re-check: the adjustments can sink a row
                 continue
             out.append(Candidate(
@@ -143,46 +144,10 @@ def _year_status(col_name: str, years: list[int] | None) -> str:
 
 
 # Thong tu 200 line codes: the OCR-stable identity of a financial line item.
-VAS_CODE_HINTS: list[tuple[str, set[str]]] = [
-    ("doanh thu thuan", {"10"}),
-    ("doanh thu ban hang va cung cap dich vu", {"01", "1"}),
-    ("gia von hang ban", {"11"}),
-    ("loi nhuan gop", {"20"}),
-    ("chi phi tai chinh", {"22"}),
-    ("chi phi ban hang", {"25"}),
-    ("chi phi quan ly doanh nghiep", {"26"}),
-    ("loi nhuan thuan tu hoat dong kinh doanh", {"30"}),
-    ("loi nhuan truoc thue", {"50"}),
-    ("loi nhuan sau thue", {"60"}),
-    ("lai co ban tren co phieu", {"70"}),
-    ("tien va cac khoan tuong duong tien", {"110"}),
-    ("hang ton kho", {"140", "141"}),
-    ("tai san ngan han", {"100"}),
-    ("tai san dai han", {"200"}),
-    ("tong tai san", {"270"}),
-    ("tong cong tai san", {"270"}),
-    ("no phai tra", {"300"}),
-    ("no ngan han", {"310"}),
-    ("no dai han", {"330"}),
-    ("von chu so huu", {"400", "410"}),
-    ("von gop cua chu so huu", {"411"}),
-    ("loi nhuan sau thue chua phan phoi", {"421"}),
-]
-
-
-def _expected_codes(metric_variants: list[str]) -> set[str]:
-    best: set[str] = set()
-    best_len = 0
-    for phrase, codes in VAS_CODE_HINTS:
-        for m in metric_variants:
-            mn = norm(m)
-            if phrase in mn and len(phrase) > best_len:
-                best, best_len = codes, len(phrase)
-    return best
-
-
-def _code_bonus(code: str, metric_variants: list[str]) -> float:
-    expected = _expected_codes(metric_variants)
+def _code_bonus(code: str, metric_variants: list[str], label: str = "") -> float:
+    expected, known_mismatch = code_expectation(metric_variants, label)
+    if known_mismatch:
+        return -12.0
     if not expected:
         return 0.0
     c = str(code or "").strip().rstrip(".0") or str(code or "").strip()

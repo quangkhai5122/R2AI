@@ -22,6 +22,7 @@ class Route:
     growth: bool = False
     metric_norm: str = ""
     metric_variants: list[str] = field(default_factory=list)
+    metric_keys: list[str] = field(default_factory=list)
     plan: dict = field(default_factory=dict)     # decompose.Plan.to_dict()
     evidence_budget: int = 0                     # dynamic k for this question
     report_ids: list[str] = field(default_factory=list)
@@ -38,7 +39,8 @@ def route_question(qid: int, question: str, stock: StockMap, store: Store) -> Ro
               doc_type=p.doc_type, unit_scale=p.unit_scale, unit_name=p.unit_name,
               is_percent=p.is_percent, output_type=p.output_type,
               growth=p.growth, metric_norm=p.metric_norm,
-              metric_variants=list(p.metric_variants or [p.metric_norm]))
+              metric_variants=list(p.metric_variants or [p.metric_norm]),
+              metric_keys=list(p.metric_keys))
 
     if not p.tickers:
         r.confidence = "low"

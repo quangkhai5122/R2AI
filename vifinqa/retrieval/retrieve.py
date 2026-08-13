@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ..config import RETRIEVE_DEPTH
 from ..extraction.build_store import Store
+from ..finance.metrics import expand_metric_variants
 from ..router.entities import StockMap
 from ..router.decompose import split_ratio_metric
 from ..router.router import route_question
@@ -21,90 +22,6 @@ from .shortlist import build_shortlist
 _LABEL_BOOST = 1.5
 _LABEL_THRESHOLD = 88.0
 _ROW_SCORE_WEIGHT = 0.18
-
-_DERIVED_METRIC_RULES: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
-    (
-        ("he so thanh toan nhanh", "thanh toan nhanh"),
-        ("tai san ngan han", "hang ton kho", "no ngan han"),
-    ),
-    (
-        ("he so no phai tra tren von chu so huu", "no phai tra tren von chu so huu",
-         "no phai tra chia cho von chu so huu", "ty le no phai tra tren von chu so huu",
-         "d/e"),
-        ("no phai tra", "von chu so huu"),
-    ),
-    (
-        ("no phai tra tren tong tai san", "no phai tra chia cho tong tai san"),
-        ("no phai tra", "tong cong tai san", "tong tai san"),
-    ),
-    (
-        ("cfo margin", "dong tien kinh doanh tren doanh thu", "cfo tren doanh thu",
-         "luu chuyen tien thuan tu hoat dong kinh doanh tren doanh thu"),
-        ("luu chuyen tien thuan tu hoat dong kinh doanh", "doanh thu thuan"),
-    ),
-    (
-        ("cfo tren loi nhuan sau thue", "dong tien kinh doanh tren loi nhuan sau thue",
-         "he so chuyen doi loi nhuan"),
-        ("luu chuyen tien thuan tu hoat dong kinh doanh", "loi nhuan sau thue"),
-    ),
-    (
-        ("cfo tren no ngan han", "dong tien hoat dong tren no ngan han",
-         "dong tien kinh doanh tren no ngan han"),
-        ("luu chuyen tien thuan tu hoat dong kinh doanh", "no ngan han"),
-    ),
-    (
-        ("cfo", "dong tien kinh doanh", "dong tien hoat dong",
-         "luu chuyen tien thuan tu hoat dong kinh doanh"),
-        ("luu chuyen tien thuan tu hoat dong kinh doanh",),
-    ),
-    (
-        ("bien loi nhuan gop", "bien gop", "loi nhuan gop tren doanh thu"),
-        ("loi nhuan gop", "doanh thu thuan"),
-    ),
-    (
-        ("bien loi nhuan rong", "bien rong", "loi nhuan sau thue tren doanh thu"),
-        ("loi nhuan sau thue", "doanh thu thuan"),
-    ),
-    (
-        ("roa", "loi nhuan sau thue tren tong tai san"),
-        ("loi nhuan sau thue", "tong cong tai san", "tong tai san"),
-    ),
-    (
-        ("roe", "loi nhuan sau thue tren von chu so huu"),
-        ("loi nhuan sau thue", "von chu so huu"),
-    ),
-    (
-        ("von luu dong rong",),
-        ("tai san ngan han", "no ngan han"),
-    ),
-    (
-        ("ty trong hang ton kho", "hang ton kho tren tong tai san",
-         "hang ton kho chia cho tong tai san"),
-        ("hang ton kho", "tong cong tai san", "tong tai san"),
-    ),
-    (
-        ("tong chi phi ban hang va chi phi quan ly doanh nghiep",
-         "chi phi ban hang va chi phi quan ly doanh nghiep", "sg&a", "sga"),
-        ("chi phi ban hang", "chi phi quan ly doanh nghiep", "doanh thu thuan"),
-    ),
-    (
-        ("he so kha nang thanh toan lai vay", "kha nang thanh toan lai vay"),
-        ("loi nhuan truoc thue", "chi phi lai vay", "chi phi tai chinh"),
-    ),
-    (
-        ("vong quay tai san co dinh",),
-        ("doanh thu thuan", "tai san co dinh", "tai san co dinh huu hinh"),
-    ),
-    (
-        ("vong quay tong tai san",),
-        ("doanh thu thuan", "tong cong tai san", "tong tai san"),
-    ),
-    (
-        ("he so thanh toan hien hanh", "tai san ngan han gap bao nhieu lan no ngan han"),
-        ("tai san ngan han", "no ngan han"),
-    ),
-]
-
 
 def retrieve_for_route(route, store: Store, depth: int = RETRIEVE_DEPTH,
                        row_rerank: bool = False,
@@ -188,11 +105,10 @@ def _retrieval_metric_variants(route) -> list[str]:
     for v in list(out):
         num, den = split_ratio_metric(v)
         out.extend([num, den])
-    qn = norm(getattr(route, "question", "") or "")
-    for triggers, metrics in _DERIVED_METRIC_RULES:
-        if any(trigger in qn for trigger in triggers):
-            out.extend(metrics)
-    return _dedupe_variants(out)
+    return expand_metric_variants(
+        _dedupe_variants(out),
+        question=getattr(route, "question", "") or "",
+    )
 
 
 def _combined_bm25_scores(bm25: BM25, base_variants: list[str],

@@ -236,6 +236,15 @@ def test_count_metric_uses_condition_not_bao_nhieu_prefix(stock_map):
     assert parsed.output_type == "count"
     assert parsed.metric_norm == "dong tien thuan tu hoat dong kinh doanh"
     assert parsed.metric_variants[0] == parsed.metric_norm
+    assert parsed.metric_keys == ["cfo"]
+
+
+def test_router_exposes_canonical_derived_metric_key(stock_map):
+    parsed = parse_question(
+        "He so thanh toan nhanh cua VNM nam 2024 la bao nhieu lan?",
+        stock_map,
+    )
+    assert "quick_ratio" in parsed.metric_keys
 
 
 def test_count_metric_keeps_share_count_line_item(stock_map):

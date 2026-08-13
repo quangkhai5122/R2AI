@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 
+from ..finance.metrics import get_metric
 from ..utils.viet_num import parse_vn_number
 from ..utils.viet_text import strip_diacritics
 from .fact_resolver import ResolvedFact, resolve_fact
@@ -1417,67 +1418,33 @@ def _identity_expr(rs: list[ResolvedFact]) -> str:
 
 _NUM_RE = r"[-+]?\d+(?:[\.,]\d+)?"
 
-_CURRENT_ASSETS = Operand(
-    "tai san ngan han",
-    ("tai san ngan han", "tong tai san ngan han", "tai san luu dong va dau tu ngan han"),
-    ("tai san ngan han", "tai san luu dong va dau tu ngan han"),
-    (), ("100",))
-_INVENTORY = Operand(
-    "hang ton kho", ("hang ton kho", "hang ton kho rong"),
-    ("hang ton kho",), (), ("140", "141"))
-_CURRENT_LIABILITIES = Operand(
-    "no ngan han", ("no ngan han", "tong no ngan han", "no phai tra ngan han"),
-    ("no ngan han", "no phai tra ngan han"), (), ("310",))
-_LIABILITIES = Operand(
-    "no phai tra", ("no phai tra", "tong no phai tra", "tong cong no phai tra"),
-    ("no phai tra",), ("no ngan han", "no dai han"), ("300",))
-_EQUITY = Operand(
-    "von chu so huu", ("von chu so huu", "tong von chu so huu", "nguon von chu so huu"),
-    ("von chu so huu",), ("von gop cua chu so huu",), ("400", "410"))
-_NET_REVENUE = Operand(
-    "doanh thu thuan",
-    ("doanh thu thuan", "doanh thu thuan ve ban hang va cung cap dich vu"),
-    ("doanh thu thuan",), (), ("10",))
-_GROSS_PROFIT = Operand(
-    "loi nhuan gop",
-    ("loi nhuan gop", "loi nhuan gop ve ban hang va cung cap dich vu"),
-    ("loi nhuan gop",), (), ("20",))
-_NET_PROFIT = Operand(
-    "loi nhuan sau thue",
-    ("loi nhuan sau thue", "loi nhuan sau thue thu nhap doanh nghiep", "lnst"),
-    ("loi nhuan sau thue", "loi nhuan thuan sau thue"),
-    ("chua phan phoi", "thuoc ve co dong", "cua co dong", "phan bo cho"),
-    ("60",))
-_CFO = Operand(
-    "luu chuyen tien thuan tu hoat dong kinh doanh",
-    ("luu chuyen tien thuan tu hoat dong kinh doanh",
-     "dong tien thuan tu hoat dong kinh doanh", "lctt tu hoat dong kinh doanh"),
-    ("luu chuyen tien thuan tu hoat dong kinh doanh",
-     "dong tien thuan tu hoat dong kinh doanh"))
-_TOTAL_ASSETS = Operand(
-    "tong tai san", ("tong tai san", "tong cong tai san"),
-    ("tong tai san", "tong cong tai san"), (), ("270",))
-_SELLING_EXP = Operand(
-    "chi phi ban hang", ("chi phi ban hang",),
-    ("chi phi ban hang",), (), ("25",))
-_ADMIN_EXP = Operand(
-    "chi phi quan ly doanh nghiep", ("chi phi quan ly doanh nghiep",),
-    ("chi phi quan ly doanh nghiep",), (), ("26",))
-_FIXED_ASSETS = Operand(
-    "tai san co dinh", ("tai san co dinh", "tong tai san co dinh", "tai san co dinh huu hinh"),
-    ("tai san co dinh",), ("khau hao",), ("220",))
-_PRETAX_PROFIT = Operand(
-    "loi nhuan truoc thue",
-    ("loi nhuan truoc thue", "tong loi nhuan ke toan truoc thue", "lntt"),
-    ("loi nhuan truoc thue", "loi nhuan ke toan truoc thue"), (), ("50",))
-_INTEREST_EXPENSE = Operand(
-    "chi phi lai vay", ("chi phi lai vay", "lai tien vay"),
-    ("chi phi lai vay", "lai tien vay"),
-    ("da tra", "thuc tra", "thanh toan"))
-_OPERATING_PROFIT = Operand(
-    "loi nhuan thuan tu hoat dong kinh doanh",
-    ("loi nhuan thuan tu hoat dong kinh doanh",),
-    ("loi nhuan thuan tu hoat dong kinh doanh",), (), ("30",))
+def _canonical_operand(key: str, strict_codes: bool = True) -> Operand:
+    metric = get_metric(key)
+    return Operand(
+        metric=metric.label,
+        variants=metric.variants,
+        required_phrases=metric.required_phrases,
+        forbidden_phrases=metric.forbidden_phrases,
+        expected_codes=metric.codes if strict_codes else (),
+    )
+
+
+_CURRENT_ASSETS = _canonical_operand("current_assets")
+_INVENTORY = _canonical_operand("inventory")
+_CURRENT_LIABILITIES = _canonical_operand("current_liabilities")
+_LIABILITIES = _canonical_operand("liabilities")
+_EQUITY = _canonical_operand("equity")
+_NET_REVENUE = _canonical_operand("net_revenue")
+_GROSS_PROFIT = _canonical_operand("gross_profit")
+_NET_PROFIT = _canonical_operand("net_profit")
+_CFO = _canonical_operand("cfo", strict_codes=False)
+_TOTAL_ASSETS = _canonical_operand("total_assets")
+_SELLING_EXP = _canonical_operand("selling_expense")
+_ADMIN_EXP = _canonical_operand("administrative_expense")
+_FIXED_ASSETS = _canonical_operand("fixed_assets")
+_PRETAX_PROFIT = _canonical_operand("pretax_profit")
+_INTEREST_EXPENSE = _canonical_operand("interest_expense", strict_codes=False)
+_OPERATING_PROFIT = _canonical_operand("operating_profit")
 
 _DIRECT_METRIC_SPEC = FormulaSpec(
     "direct_metric", (), (), "money", lambda vals: vals[0], lambda rs: rs[0].expr_vnd())
