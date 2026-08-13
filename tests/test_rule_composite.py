@@ -48,6 +48,33 @@ class ScoringTests(unittest.TestCase):
         self.assertTrue(cands)
         self.assertEqual(cands[0].col_name, "2015")
 
+    def test_current_period_beats_code_and_note_columns(self):
+        tables = [_table("df1", "AAA_financial_statements_2024_consolidated", [
+            _row("Doanh thu thuần", 3.0, "10", col=0, col_name="CHỈ TIÊU"),
+            _row("Doanh thu thuần", 26.1, "10", col=2,
+                 col_name="Thuyết minh", row=2),
+            _row("Doanh thu thuần", 134_341.0, "10", col=3,
+                 col_name="Năm nay", row=3),
+            _row("Doanh thu thuần", 118_280.0, "10", col=4,
+                 col_name="Năm trước", row=4),
+        ])]
+        cands = build_shortlist(tables, ["doanh thu thuan"], [2024])
+        self.assertTrue(cands)
+        self.assertEqual(cands[0].col_name, "Năm nay")
+        self.assertEqual(cands[0].value, 134_341.0)
+
+    def test_prior_period_used_from_next_year_report(self):
+        tables = [_table("df1", "AAA_financial_statements_2025_consolidated", [
+            _row("Doanh thu thuần", 150.0, "10", col=3,
+                 col_name="Năm nay"),
+            _row("Doanh thu thuần", 120.0, "10", col=4,
+                 col_name="Năm trước", row=2),
+        ])]
+        cands = build_shortlist(tables, ["doanh thu thuan"], [2024])
+        self.assertTrue(cands)
+        self.assertEqual(cands[0].col_name, "Năm trước")
+        self.assertEqual(cands[0].value, 120.0)
+
 
 class FactResolverTests(unittest.TestCase):
     def setUp(self):

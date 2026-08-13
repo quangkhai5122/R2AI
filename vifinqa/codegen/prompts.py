@@ -18,9 +18,10 @@ Rules:
 3. Find the right line item by fuzzy label match (str.contains with a distinctive
    lowercase substring, case=False) and/or by VAS code when obvious
    (e.g. net revenue code '10', profit after tax '60', total assets '270').
-4. Pick the right column: match the asked year in col_name ('2023', '31/12/2023',
-   'Năm nay'); if col_name is empty, the smallest `col` with data is usually the
-   current year, the next one the prior year.
+4. Pick the right column: match the asked year in col_name ('2023', '31/12/2023').
+   For a report of the asked year, prefer 'Năm nay', 'Kỳ này', 'Số cuối năm' or
+   'Cuối kỳ'. Never use metadata columns such as 'Mã số', 'Thuyết minh' or
+   'Chỉ tiêu' as financial values.
 5. Convert units: value_vnd = value * unit_scale. The question asks the answer in a
    specific unit -> answer = round(value_vnd / ANSWER_SCALE, 2).
 5b. UNIT OF THE ANSWER (organizer-confirmed, a frequent source of wrong answers):

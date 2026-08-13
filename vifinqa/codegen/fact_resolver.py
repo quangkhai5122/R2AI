@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from ..retrieval.shortlist import build_shortlist
+from ..retrieval.shortlist import _period_kind, build_shortlist
 from ..utils.viet_text import norm
 
 # a column header explicitly naming the wanted year is the strongest evidence
@@ -31,6 +31,7 @@ class ResolvedFact:
     report_id: str
     table_pos: int
     label: str
+    code: str
     col: int
     col_name: str
     value: float             # raw cell value (NOT unit-converted)
@@ -50,7 +51,7 @@ class ResolvedFact:
                 f"& ({self.var}['col'] == {self.col}), 'value'].iloc[0])")
 
     def expr_vnd(self) -> str:
-        return f"{self.expr()} * {self.unit_scale:g}"
+        return f"({self.expr()} * {self.unit_scale:g})"
 
 
 def _fragment(label: str, max_len: int = 40) -> str:
@@ -92,20 +93,29 @@ def resolve_fact(fact, tables: list[dict], metric_variants: list[str],
     if not cands:
         return None
     best = cands[0]
-    year_ev = _year_evidence(best.col_name, fact.year)
+    year_ev = _year_evidence(best.col_name, fact.year, best.report_id)
     return ResolvedFact(
         ticker=fact.ticker, year=fact.year, metric=fact.metric,
         var=best.var, report_id=best.report_id, table_pos=best.table_pos,
-        label=best.label, col=best.col, col_name=best.col_name,
+        label=best.label, code=best.code, col=best.col, col_name=best.col_name,
         value=best.value, unit_scale=best.unit_scale, score=best.score,
         year_evidence=year_ev)
 
 
-def _year_evidence(col_name: str, year: int | None) -> int:
+def _year_evidence(col_name: str, year: int | None,
+                   report_id: str = "") -> int:
     if year is None:
         return _YEAR_WEAK
     cn = str(col_name)
     if re.search(rf"31\s*/\s*12\s*/\s*{year}", cn) or re.search(rf"(?<!\d){year}(?!\d)", cn):
+        return _YEAR_STRONG
+    found = re.search(r"(?:financial_statements_|_)(20\d{2})(?:_|$)",
+                      str(report_id))
+    report_year = int(found.group(1)) if found else None
+    kind = _period_kind(cn)
+    if report_year == year and kind == "current":
+        return _YEAR_STRONG
+    if report_year == year + 1 and kind == "prior":
         return _YEAR_STRONG
     return _YEAR_WEAK
 

@@ -85,7 +85,7 @@ def build_shortlist(tables: list[dict], metric_variants: list[str],
             score -= _extra_token_penalty(label, metric_variants)
 
             sub = df[df["label"] == label]
-            pick = _pick_column(sub, years)
+            pick = _pick_column(sub, years, t.get("report_year"))
             if pick is None:
                 continue
             row_i, col, col_name, value, unit_scale, code = pick
@@ -213,26 +213,80 @@ def _qualifier_bonus(label: str, want: set[str]) -> float:
     return -3.0 if want else 0.0
 
 
-def _pick_column(sub, years: list[int] | None):
-    """Choose the column matching the asked year; fall back to the first one."""
+_CURRENT_PERIOD_HEADERS = (
+    "nam nay", "ky nay", "so cuoi nam", "cuoi nam", "cuoi ky",
+    "tai ngay ket thuc", "nam ket thuc ngay", "nam tai chinh ket thuc ngay",
+    "tong cong", "current year", "current period", "ending balance", "total",
+)
+_PRIOR_PERIOD_HEADERS = (
+    "nam truoc", "ky truoc", "so dau nam", "dau nam", "dau ky",
+    "prior year", "previous year", "beginning balance",
+)
+_METADATA_HEADERS = (
+    "thuyet minh", "ma so", "chi tieu", "noi dung", "dien giai", "stt",
+    "thuyetminh", "maso", "chitieu", "item", "code", "note",
+)
+
+
+def _period_kind(col_name: str) -> str:
+    """Classify an original table header as current/prior/metadata/unknown."""
+    cn = norm(str(col_name or ""))
+    if not cn or cn == "nan":
+        return "metadata"
+    if any(marker in cn for marker in _PRIOR_PERIOD_HEADERS):
+        return "prior"
+    if any(marker in cn for marker in _CURRENT_PERIOD_HEADERS):
+        return "current"
+    if any(marker == cn or marker in cn for marker in _METADATA_HEADERS):
+        return "metadata"
+    return "unknown"
+
+
+def _column_score(col_name: str, years: list[int] | None,
+                  report_year: int | None) -> int:
+    """Rank value columns using explicit years and financial-period headers."""
+    cn = str(col_name or "")
+    requested = {int(y) for y in (years or [])}
+
+    # A literal requested year beats every inferred current/prior convention.
+    for y in requested:
+        if re.search(rf"31\s*/\s*12\s*/\s*{y}", cn):
+            return 100
+        if re.search(rf"(?<!\d){y}(?!\d)", cn):
+            return 95
+    if re.search(r"(?<!\d)(19|20)\d{2}(?!\d)", cn):
+        return -40
+
+    kind = _period_kind(cn)
+    if kind == "metadata":
+        return -100
+
+    current_wanted = not requested or report_year is None or report_year in requested
+    prior_wanted = (report_year is not None and
+                    any(int(report_year) == y + 1 for y in requested))
+    if kind == "current":
+        return 80 if current_wanted and not prior_wanted else 20
+    if kind == "prior":
+        return 80 if prior_wanted else 10
+    return 30
+
+
+def _pick_column(sub, years: list[int] | None,
+                 report_year: int | None = None):
+    """Choose the requested financial period, excluding code/note columns."""
     best = None
-    cols = sorted(sub["col"].unique())
     for r in sub.itertuples():
-        cs = 0
         cn = str(r.col_name)
-        for y in (years or []):
-            if re.search(rf"31\s*/\s*12\s*/\s*{y}", cn):
-                cs = max(cs, 3)
-            elif re.search(rf"(?<!\d){y}(?!\d)", cn):
-                cs = max(cs, 2)
-        if cs == 0 and cols and int(r.col) == int(cols[0]):
-            cs = 1                       # positional default = current period
-        if best is None or cs > best[0]:
-            best = (cs, r.Index, int(r.col), cn, float(r.value),
+        cs = _column_score(cn, years, report_year)
+        # For equally informative headers, retain the original left-to-right
+        # convention among actual value columns.
+        rank = (cs, -int(r.col))
+        if best is None or rank > best[0]:
+            best = (rank, r.Index, int(r.col), cn, float(r.value),
                     float(r.unit_scale), str(getattr(r, "code", "")))
     if best is None:
         return None
-    _cs, idx, col, cn, val, us, code = best
+    _rank, idx, col, cn, val, us, code = best
     row_i = int(sub.loc[idx, "row"]) if "row" in sub.columns else 0
     return row_i, col, cn, val, us, code
 

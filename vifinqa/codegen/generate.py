@@ -24,6 +24,7 @@ from ..retrieval.shortlist import build_shortlist, render_shortlist
 from .prompts import SYSTEM, build_user, SELECT_SYSTEM, build_select_user
 from .rule_codegen import try_rule_answer
 from .rule_composite import try_composite_answer
+from .formula_solver import try_formula_answer
 from .arbitrate import arbitrate
 from .selection import parse_selection, synthesize, confidence as sel_conf
 from .semantic import (
@@ -461,8 +462,17 @@ def _arbitrated(b: QuestionBundle, rule: dict | None, llm_rec: dict,
 
 
 def _rule_result(b: QuestionBundle, encoder=None) -> dict | None:
-    """Deterministic answer: composite solver first (growth/difference/ratio/
-    ranking), then the single-fact lookup rule."""
+    """Deterministic answer: formula/composite solvers, then lookup rule."""
+    fa = try_formula_answer(b.route, b.tables, encoder=encoder)
+    if fa.ok:
+        ex = _run_validated(b, fa.pandas_query)
+        if ex["status"] == "ok":
+            out = _final(b, round(ex["value"], 2), fa.pandas_query,
+                         "rule_formula", semantic=ex.get("semantic"))
+            out["detail"] = fa.detail
+            out["detail_conf"] = fa.confidence
+            return out
+
     ca = try_composite_answer(b.route, b.tables, encoder=encoder)
     if ca.ok:
         ex = _run_validated(b, ca.pandas_query)
