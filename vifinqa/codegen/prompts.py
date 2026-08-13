@@ -150,15 +150,18 @@ Operations:
   average           mean of all listed                    operands: [i, j, ...]
   ranking_max       the largest of the listed             operands: [i, j, ...]
   ranking_min       the smallest of the listed            operands: [i, j, ...]
+  count             count selected entities/periods       operands: [i, j, ...]
 
 Rules:
 1. Pick candidates by their line-item meaning AND their period. The column
    header (col_name) tells you the period — never pick a row whose period
    contradicts the question.
 2. For a comparison across companies, pick one candidate PER company.
-3. If no candidate fits the question, answer {"op": "none", "operands": []}.
+3. For count questions, pick only candidates that satisfy the stated sign or
+   threshold condition, with at most one proof row per counted entity/period.
+4. If no candidate fits the question, answer {"op": "none", "operands": []}.
    Guessing a wrong row is worse than admitting it is not there.
-4. Output only the JSON object. No explanation, no code, no markdown."""
+5. Output only the JSON object. No explanation, no code, no markdown."""
 
 SELECT_USER_TMPL = """Question (Vietnamese): {question}
 

@@ -25,10 +25,16 @@ def main():
     ap.add_argument("--out", default=str(config.RETRIEVAL_JSONL))
     ap.add_argument("--depth", type=int, default=config.RETRIEVE_DEPTH)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--row-rerank", action="store_true",
+                    help="rerank table candidates with row-level shortlist scores")
+    ap.add_argument("--row-score-weight", type=float, default=0.18,
+                    help="weight for row-level shortlist score when --row-rerank is set")
     args = ap.parse_args()
 
     run_retrieval(Path(args.questions), Path(args.store_dir), Path(args.code_stock),
-                  Path(args.out), args.depth, args.limit)
+                  Path(args.out), args.depth, args.limit,
+                  row_rerank=args.row_rerank,
+                  row_score_weight=args.row_score_weight)
 
 
 if __name__ == "__main__":

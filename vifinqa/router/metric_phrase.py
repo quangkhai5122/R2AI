@@ -92,6 +92,30 @@ _STOP_LEFTOVER = {
 _STOP_PHRASES = re.compile(
     r"\b(?:doanh nghiep|cong ty me|cong ty co phan|ngan hang tmcp|"
     r"ngan hang thuong mai co phan|tong cong ty|tap doan)\b")
+_COUNT_CONDITION_CUE = re.compile(
+    r"\b(?:dong thoi|vua(?:\s+co)?|ghi nhan|phat sinh|"
+    r"co\s+(?=(?:gia tri|dong|luu|lai|he|so\s+(?:du|luong)|"
+    r"chi|doanh|tai|no|von|thue|cam|chenh|ty|bien|tong|khoan))|"
+    r"dat|vuot|tang|giam)\b"
+)
+_COUNT_THRESHOLD_TAIL = re.compile(
+    r"\b(?:lon hon|nho hon|duoi|vuot|cao hon|thap hon|it hon|nhieu hon|"
+    r"toi thieu|toi da|khong qua|tren muc|duoi muc|tren)\s+"
+    r"[-+]?\d[\d\s.,]*(?:ty|trieu|nghin|ngan|dong|vnd|lan|vong|phan tram|"
+    r"co phieu|co phan|%)?.*$"
+)
+_COUNT_NOISE = re.compile(
+    r"\b(?:dong thoi|vua|ghi nhan|phat sinh|dat|muc|gia tri|so du|"
+    r"cuoi ky|cuoi nam|dau nam|trong nam|vao cuoi nam|tai cuoi nam|"
+    r"duong|am|cai thien|tang truong|toc do|tang|giam|lon hon|nho hon|duoi|vuot|cao hon|"
+    r"thap hon|so voi|hon|trung vi|ca giai doan|sau nam dau tien|"
+    r"trong so|cac|nhom|thuoc nhom|nganh)\b"
+)
+_COUNT_SPLIT = re.compile(r"\b(?:dong thoi|vua|va|hoac)\b|[,;]")
+_NUMERIC_AND_UNITS = re.compile(
+    r"\b[-+]?\d[\d\s.,]*(?:ty|trieu|nghin|ngan|dong|vnd|lan|vong|phan tram|"
+    r"co phieu|co phan|%)?\b"
+)
 
 
 @dataclass
@@ -151,6 +175,93 @@ def extract_metric(question: str, company_aliases: list[str] | None = None,
     if not core:
         core = wide or raw
     return MetricPhrase(core=core, wide=wide, raw=_trim_stopwords(raw))
+
+
+def extract_count_metrics(question: str, company_aliases: list[str] | None = None,
+                          tickers: list[str] | None = None) -> list[str]:
+    """Return condition metrics for count questions.
+
+    Generic extraction cuts everything after the first ``bao nhieu``.  That is
+    correct for "doanh thu la bao nhieu", but wrong for population-count
+    questions: in "co bao nhieu cong ty ... co dong tien thuan duong", the row
+    to retrieve is the condition after the population, not the phrase
+    "co bao nhieu".
+    """
+    q = norm(question)
+    for alias in sorted(company_aliases or [], key=len, reverse=True):
+        if len(alias) >= 5:
+            q = q.replace(alias, " ")
+    for t in tickers or []:
+        q = re.sub(rf"(?<![0-9a-z]){t.lower()}(?![0-9a-z])", " ", q)
+    q = _squeeze(_STOP_PHRASES.sub(" ", q))
+
+    if "bao nhieu" in q:
+        idx = q.find("bao nhieu")
+        # Leading "co bao nhieu ..." asks for a population count; the metric is
+        # after that phrase.  Late "... trong bao nhieu nam" asks about a metric
+        # already stated before it.
+        before = q[:idx]
+        after = q[idx + len("bao nhieu"):]
+        asks_population = (
+            idx < len(q) * 0.35
+            or re.search(r"\bco\s*$", before) is not None
+            or re.match(r"\s*(?:trong\s+so\s+)?(?:cac\s+)?"
+                        r"(?:cong ty|doanh nghiep|ngan hang|nam|ma|don vi)\b",
+                        after) is not None
+        )
+        seed = after if asks_population else before
+    else:
+        seed = q
+    seed = _squeeze(seed)
+
+    match = _COUNT_CONDITION_CUE.search(seed)
+    segment = seed[match.start():] if match else seed
+    segment = _squeeze(_LEAD_TIME.sub("", segment))
+
+    raw_variants = [segment]
+    raw_variants.extend(_COUNT_SPLIT.split(segment))
+    if " tren " in segment:
+        raw_variants.extend(re.split(r"\btren\b", segment))
+
+    out, seen = [], set()
+    for raw in raw_variants:
+        cleaned = _clean_count_metric(raw)
+        if not cleaned:
+            continue
+        toks = cleaned.split()
+        if len(toks) < 2:
+            continue
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        out.append(cleaned)
+    return out
+
+
+def _clean_count_metric(text: str) -> str:
+    s = _squeeze(text)
+    for rex in (_UNIT_TAIL, _YEAR_TAIL, _DATE_TAIL):
+        s = rex.sub(" ", s)
+    s = _COUNT_THRESHOLD_TAIL.sub(" ", s)
+    s = _NUMERIC_AND_UNITS.sub(" ", s)
+    s = re.sub(r"^co\s+(?=\S)", " ", s)
+    s = _COUNT_NOISE.sub(" ", s)
+    s = _squeeze(s)
+    s = re.sub(r"^co\s+(?=\S)", " ", s)
+    s = _squeeze(s)
+    # Keep "so luong co phieu" intact; it is a real report row label, unlike
+    # the leading "so du/gia tri" wrappers handled by extract_metric().
+    return _trim_count_stopwords(s)
+
+
+def _trim_count_stopwords(s: str) -> str:
+    stop = set(_STOP_LEFTOVER) - {"co", "dong"}
+    toks = s.split()
+    while toks and toks[0] in stop:
+        toks.pop(0)
+    while toks and toks[-1] in stop:
+        toks.pop()
+    return " ".join(toks)
 
 
 def _squeeze(s: str) -> str:

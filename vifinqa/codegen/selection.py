@@ -31,7 +31,7 @@ from .units import check_answer_unit, percent_from_cell, cell_is_already_percent
 # ops the synthesiser can execute from selected cells
 SELECT_OPS = {"lookup", "sum", "average", "difference", "growth_pct",
               "ratio", "margin", "ratio_times", "ranking_max", "ranking_min",
-              "percentage_point"}
+              "percentage_point", "count"}
 
 ARITY = {"lookup": 1, "difference": 2, "growth_pct": 2, "ratio": 2,
          "margin": 2, "ratio_times": 2, "percentage_point": 2}
@@ -175,6 +175,13 @@ def _apply(op, picks, q_scale, output_type, vnd, expr, expr_vnd, route):
         fn = "max" if op == "ranking_max" else "min"
         chosen = max(vals) if op == "ranking_max" else min(vals)
         return chosen / q_scale, f"round({fn}({', '.join(exprs)}) / {q_scale:g}, 2)"
+
+    if op == "count":
+        exprs = [expr(c) for c in picks]
+        # Make the count dataframe-grounded for the semantic guard: each picked
+        # proof cell contributes one boolean term when it exists and is finite.
+        terms = [f"({e} == {e})" for e in exprs]
+        return float(len(picks)), f"round(float({' + '.join(terms)}), 2)"
 
     return None, ""
 

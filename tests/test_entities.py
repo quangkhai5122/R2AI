@@ -19,6 +19,13 @@ def stock_map(tmp_path: Path) -> StockMap:
             ("DTK", "Tổng Công ty Điện lực TKV - CTCP"),
             ("OCB", "Ngân hàng TMCP Phương Đông"),
             ("EIB", "Ngân hàng TMCP Xuất Nhập khẩu Việt Nam"),
+            ("MSN", "CTCP Tập đoàn Masan"),
+            ("MCH", "CTCP Hàng tiêu dùng Masan"),
+            ("DBC", "CTCP Tập đoàn Dabaco Việt Nam"),
+            ("MPC", "CTCP Tập đoàn Thủy sản Minh Phú"),
+            ("ASM", "CTCP Tập đoàn Sao Mai"),
+            ("OGC", "CTCP Tập đoàn Đại Dương"),
+            ("QNS", "CTCP Đường Quảng Ngãi"),
             ("HAG", "Cong ty Co phan Hoang Anh Gia Lai"),
             ("HNG", "Cong ty Co phan Nong nghiep Quoc te Hoang Anh Gia Lai"),
             ("DCM", "Cong ty Co phan Phan bon Dau khi Ca Mau"),
@@ -44,6 +51,26 @@ def test_finds_lowercase_tickers(stock_map):
     parsed = parse_question("so sánh vnm với gas năm 2023", stock_map)
     assert parsed.tickers == ["VNM", "GAS"]
     assert parsed.ticker_source == "explicit"
+
+
+def test_finds_trade_names_used_in_count_groups(stock_map):
+    parsed = parse_question(
+        "Trong số các công ty Masan, Đại Dương và Vinamilk có lợi nhuận sau "
+        "thuế dương, doanh nghiệp có biên lợi nhuận ròng cao nhất là đơn vị nào?",
+        stock_map,
+    )
+    assert parsed.tickers == ["MSN", "OGC", "VNM"]
+    assert parsed.ticker_source == "explicit_name"
+
+
+def test_finds_short_food_company_names(stock_map):
+    parsed = parse_question(
+        "Năm 2024, nhóm Minh Phú, Dabaco, Sao Mai và Đường Quảng Ngãi có bao "
+        "nhiêu doanh nghiệp tăng doanh thu?",
+        stock_map,
+    )
+    assert parsed.tickers == ["MPC", "DBC", "ASM", "QNS"]
+    assert parsed.ticker_source == "explicit_name"
 
 
 def test_long_company_alias_masks_embedded_other_ticker(stock_map):
@@ -198,3 +225,24 @@ def test_count_output_supports_in_population_wording(stock_map):
         stock_map,
     )
     assert parsed.output_type == "count"
+
+
+def test_count_metric_uses_condition_not_bao_nhieu_prefix(stock_map):
+    parsed = parse_question(
+        "Co bao nhieu cong ty VNM va GAS co dong tien thuan tu hoat dong "
+        "kinh doanh lon hon 1 nghin ty dong trong nam 2025?",
+        stock_map,
+    )
+    assert parsed.output_type == "count"
+    assert parsed.metric_norm == "dong tien thuan tu hoat dong kinh doanh"
+    assert parsed.metric_variants[0] == parsed.metric_norm
+
+
+def test_count_metric_keeps_share_count_line_item(stock_map):
+    parsed = parse_question(
+        "Co bao nhieu cong ty FPT va FTS co so luong co phieu dang luu hanh "
+        "vuot 350 trieu co phieu vao cuoi nam 2021?",
+        stock_map,
+    )
+    assert parsed.output_type == "count"
+    assert "so luong co phieu dang luu hanh" in parsed.metric_variants

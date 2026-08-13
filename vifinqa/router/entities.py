@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from ..config import YEAR_MIN, YEAR_MAX
-from .metric_phrase import extract_metric
+from .metric_phrase import extract_count_metrics, extract_metric
 from ..utils.viet_text import (
     fuzz_token_set,
     norm,
@@ -63,6 +63,83 @@ _STRIP_PHRASES = re.compile(
     r"|cong ty co phan|cong ty cp|tong cong ty|ngan hang thuong mai co phan"
     r"|ngan hang tmcp|tap doan)\b|\b31\s*/\s*12(\s*/\s*\d{2,4})?\b")
 
+_SPECIAL_ALIASES: dict[str, tuple[str, ...]] = {
+    # Questions often use trade names / short forms instead of the legal names
+    # from code_stock.csv. Keep this list conservative: distinctive brand names
+    # only, normalized later before matching.
+    "VNM": ("Vinamilk",),
+    "MSN": ("Masan", "Tập đoàn Masan"),
+    "MCH": ("Masan Consumer", "Hàng tiêu dùng Masan"),
+    "MML": ("Masan MeatLife",),
+    "MSR": ("Masan High-Tech Materials",),
+    "DBC": ("Dabaco",),
+    "MPC": ("Minh Phú", "Thủy sản Minh Phú"),
+    "ASM": ("Sao Mai", "Tập đoàn Sao Mai"),
+    "OGC": ("Đại Dương", "Tập đoàn Đại Dương"),
+    "QNS": ("Đường Quảng Ngãi",),
+    "VIC": ("Vingroup", "Tập đoàn Vingroup"),
+    "VRE": ("Vincom Retail",),
+    "KBC": ("Đô thị Kinh Bắc", "Kinh Bắc"),
+    "VPI": ("Văn Phú Invest", "Văn Phú"),
+    "HPX": ("Hải Phát", "Đầu tư Hải Phát"),
+    "MWG": ("Thế Giới Di Động",),
+    "PNJ": ("Phú Nhuận", "Vàng bạc Đá quý Phú Nhuận"),
+    "HAG": ("Hoàng Anh Gia Lai",),
+    "HNG": ("Nông nghiệp Quốc tế Hoàng Anh Gia Lai",),
+    "MBB": ("MBBank", "MB Bank", "Ngân hàng Quân đội"),
+    "VCB": ("Vietcombank", "Ngoại thương Việt Nam"),
+    "CTG": ("VietinBank", "Công Thương Việt Nam"),
+    "BID": ("BIDV", "Đầu tư và Phát triển Việt Nam"),
+    "TCB": ("Techcombank", "Kỹ thương Việt Nam"),
+    "VPB": ("VPBank", "Việt Nam Thịnh Vượng"),
+    "HDB": ("HDBank",),
+    "EIB": ("Eximbank", "Xuất nhập khẩu Việt Nam"),
+    "KLB": ("Kienlongbank", "Kiên Long"),
+    "NAB": ("Nam A Bank", "Nam Á"),
+    "NVB": ("NCB", "Quốc Dân"),
+    "SGB": ("Saigonbank", "Sài Gòn Công Thương"),
+    "MSB": ("Maritime Bank", "Hàng hải Việt Nam"),
+}
+
+_COUNTRY_SUFFIXES = (" viet nam", " vn")
+_CORP_SUFFIXES = (
+    " ctcp", " cong ty co phan", " cong ty cp", " group", " holdings",
+    " corporation", " corp", " jsc",
+)
+
+
+def _core_company_aliases(name_norm: str) -> list[str]:
+    """Generate a few safe, legal-word-stripped aliases from code_stock names."""
+    out: list[str] = []
+    candidates = [norm(name_norm), strip_company_prefixes(norm(name_norm))]
+    for raw in candidates:
+        base = raw
+        changed = True
+        while changed:
+            changed = False
+            for suffix in _CORP_SUFFIXES:
+                if base.endswith(suffix):
+                    base = base[:-len(suffix)].strip()
+                    changed = True
+        base = strip_company_prefixes(base)
+        if base and base not in out:
+            out.append(base)
+        for suffix in _COUNTRY_SUFFIXES:
+            if base.endswith(suffix):
+                short = base[:-len(suffix)].strip()
+                if _is_distinctive_company_alias(short) and short not in out:
+                    out.append(short)
+    return out
+
+
+def _is_distinctive_company_alias(alias: str) -> bool:
+    toks = alias.split()
+    if not toks:
+        return False
+    if len(alias) >= 7:
+        return True
+    return len(toks) == 1 and len(toks[0]) >= 6
+
 
 @dataclass
 class Parsed:
@@ -95,6 +172,7 @@ class StockMap:
         # normalized aliases for fuzzy matching / name removal
         self.aliases: list[tuple[str, str]] = []
         self.aliases_of: dict[str, list[str]] = {}
+        self.short_aliases: set[tuple[str, str]] = set()
         for t, name in self.ticker2name.items():
             n = norm(name)
             variants = [n]
@@ -109,6 +187,13 @@ class StockMap:
                         short = base[:-len(suffix)].strip()
                         if short:
                             variants.append(short)
+            for base in list(variants):
+                variants.extend(_core_company_aliases(base))
+            for alias in _SPECIAL_ALIASES.get(t, ()):
+                a = norm(alias)
+                if a:
+                    variants.append(a)
+                    self.short_aliases.add((a, t))
             variants = list(dict.fromkeys(variants))
             for v in variants:
                 self.aliases.append((v, t))
@@ -134,7 +219,7 @@ class StockMap:
         # "CTCP Chứng khoán FPT" maps only to FTS, not both FTS and FPT.
         candidates = []
         for alias, ticker in self.aliases:
-            if len(alias) < 7:
+            if len(alias) < 7 and (alias, ticker) not in self.short_aliases:
                 continue
             rex = re.compile(rf"(?<![0-9a-z]){re.escape(alias)}(?![0-9a-z])")
             for match in rex.finditer(qn):
@@ -278,6 +363,12 @@ def parse_question(question: str, stock: StockMap) -> Parsed:
     p.metric_norm = mp.core
     p.metric_wide = mp.wide
     p.metric_variants = mp.variants()
+    if p.output_type == "count":
+        count_variants = extract_count_metrics(question, aliases, p.tickers)
+        if count_variants:
+            p.metric_norm = count_variants[0]
+            p.metric_variants = _dedupe_metric_variants(
+                count_variants + p.metric_variants)
 
     # legacy subtractive phrase kept as a last-resort variant
     m = _STRIP_PHRASES.sub(" ", qn)
@@ -292,6 +383,17 @@ def parse_question(question: str, stock: StockMap) -> Parsed:
     if not p.metric_norm:
         p.metric_norm = legacy
     return p
+
+
+def _dedupe_metric_variants(variants: list[str]) -> list[str]:
+    seen, out = set(), []
+    for v in variants:
+        v = " ".join(str(v or "").split())
+        if not v or v in seen:
+            continue
+        seen.add(v)
+        out.append(v)
+    return out
 
 
 def _first_output_marker(answer_tail: str) -> str | None:

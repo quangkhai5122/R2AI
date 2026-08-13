@@ -5,3 +5,7 @@ artifacts/
 data/
 .kaggle/
 *.zip
+.DS_Store
+results-*/
+kaggle/results-*/
+kaggle/result-*/

@@ -108,6 +108,18 @@ class SynthesisTests(unittest.TestCase):
         self.assertAlmostEqual(s, 6.0)
         self.assertAlmostEqual(a, 3.0)
 
+    def test_count_is_dataframe_grounded(self):
+        cs = [_C(var="df1", value=2.0, unit_scale=1.0),
+              _C(var="df2", value=4.0, unit_scale=1.0),
+              _C(var="df3", value=-1.0, unit_scale=1.0)]
+        ans, q, err = synthesize(Selection("count", [1, 3]), cs,
+                                 {"unit_scale": 1.0, "output_type": "count"})
+        self.assertIsNone(err)
+        self.assertAlmostEqual(ans, 2.0)
+        self.assertIn("df1", q)
+        self.assertIn("df3", q)
+        compile(q, "<q>", "eval")
+
     def test_division_by_zero_is_reported_not_raised(self):
         num, den = _C(value=1.0, unit_scale=1.0), _C(value=0.0, unit_scale=1.0)
         ans, _q, err = synthesize(Selection("ratio", [1, 2]), [num, den], self.route)
