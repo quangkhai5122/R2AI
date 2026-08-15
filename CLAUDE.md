@@ -6,7 +6,46 @@ Luật thi: `instructions/*.md`.
 
 **`RUNBOOK.md` là nguồn sự thật duy nhất về lệnh chạy** — mọi thay đổi pipeline
 phải ghi đè vào đó (không tạo file hướng dẫn mới). `README.md` chỉ là tổng quan.
-Thay đổi P0/Kaggle mới nhất: `SESSION_2026-08-03_CODEX_P0_KAGGLE_RECOVERY.md`.
+Thay đổi mới nhất: `P2_2_STRUCTURED_SELECTION_V2_IMPLEMENTATION.md`; command runnable ở
+`RUNBOOK_P2_2_STRUCTURED_SELECTION_V2.md` và `kaggle/vifinqa-codegen-p22.ipynb`.
+## SNAPSHOT HIỆN TẠI — 2026-08-15
+
+- Frozen control #19 giữ nguyên: TABLES_F2 `.4439`, DOCS_F2 `.8969`, ANSWER/EXEC
+  `.2292`; 220 structural-none.
+- Raw P2.2 semantic-v5 đã chạy xong trên Kaggle: B IDs `[855,966]`, C IDs
+  `[102,183,355,591]`; mỗi ID có 2 saved responses đầy đủ. Không chạy lại GPU.
+- Compiler v5.1 sửa sticky-unit/bare-VND bằng effective unit provenance và fail-closed
+  guard. ID 966 được sửa từ 3 thành 2; B replay 2/2, C replay 4/4.
+- Mask hiện hành: B `[855,966]` (2 câu, no-rescue); C `[102,183,355,591]` (4 câu,
+  rescue). Final hybrid chỉ thay đúng sáu ID này; 214 structural-none còn lại.
+- Candidate chưa nộp:
+  `artifacts/submission_p22bc_semantic_v51/submission.zip`, SHA-256
+  `58dd6948f1537ffed541dd52b0a3467375b025e72ff46f8c13a46ca0910577b2`.
+- Gate local: py_compile pass, full suite 283/283; ZIP có 1 results + 1,575 CSV.
+- Payload schema 8 cũ là provenance của raw run và hiện stale so với source v5.1.
+  Nếu sau này chạy GPU mới phải rebuild/reverify payload; v5.1 hiện tại không cần GPU.
+- Lượt tiếp theo: nộp candidate v5.1 một lần và báo score. ID 71/271 chỉ được sửa trong
+  deterministic overlay ablation riêng, không trộn âm thầm vào candidate sáu ID.
+
+
+## SNAPSHOT LỊCH SỬ — 2026-08-13 (schema 5/6, RETIRED)
+
+- Frozen control #19: TABLES_F2 `.4439`, DOCS_F2 `.8969`, ANSWER/EXEC `.2292`;
+  `artifacts/codegen_p21r_all_v3.jsonl`, 220 structural-none.
+- Structured Selection v2 đã triển khai: atomic metric slots, named facts/bindings,
+  typed nested IR, deterministic compiler/semantic replay và trace schema 2.
+- Checkpoint Stage B schema 5 SHA `4f6c0bee...` đã audit: 1.012 rows, target 55,
+  attempted 48, pending 7, accepted 10, rejected 38. Tail mask đã freeze IDs
+  `909,926,939,966,992,1001,1012` (SHA `2ab36ca7...`).
+- Semantic review dựng lại shortlist cho 10 accepted: chỉ ID 855 plausible (chưa gold);
+  9 output còn lại sai/thiếu metric, entity, year hoặc tái dùng cùng ref nhiều năm.
+- **HOLD:** chưa chạy tail/C, chưa hybrid. Bước kế tiếp là thêm guard provenance/coverage
+  deterministic và replay raw responses trong checkpoint trước khi dùng thêm GPU.
+- Schema 6 thêm fallback khi `n=2` OOM ở batch 1: sinh tuần tự `n=1+n=1`. Mọi tail dùng
+  output/signature mới; không resume checkpoint schema 5 bằng runtime mới.
+- Payload schema 5/stable manifest `f174502ed8fe595e...` là provenance của checkpoint
+  gốc. Recovery payload schema 6 chỉ đóng sau khi tail mask được tạo/fingerprint.
+- Gate local: **243 tests pass**. P2.2 chưa có leaderboard score.
 
 ## SỰ THẬT ĐÃ XÁC NHẬN (không cần kiểm chứng lại)
 
@@ -254,8 +293,9 @@ artifacts/                   store/, retrieval.jsonl, submission/ (gitignored)
   bẩy mạnh nhất; greedy giúp resume ổn định hơn khi chỉ lấy một sample.
 - `run_codegen` giờ **crash-safe**: ghi rule-baseline đầy đủ ngay phút thứ ~2,
   rồi LLM ghi đè dần theo chunk (`--checkpoint-every 32`), `--time-budget-min`
-  dừng sạch trước giới hạn phiên, chạy lại = **resume** (bỏ qua câu đã có
-  source `llm*`). File out LUÔN đủ 1.012 dòng và nộp được ở mọi thời điểm.
+  dừng sạch trước giới hạn phiên. Resume chỉ bỏ qua record có
+  `llm_attempt_status=completed` và exact `run_signature`, kể cả attempt bị reject hoặc
+  arbitration giữ rule. File out luôn đủ 1.012 dòng và nộp được ở mọi thời điểm.
 - HF runner tự giảm batch khi CUDA OOM (`4→2→1`) và checkpoint round 1 trước
   self-debug. Resume chỉ nhận kết quả có cùng `run_signature`; phiên Kaggle mới
   phải đưa checkpoint cũ về đúng đường dẫn `/kaggle/working/codegen_results.jsonl`.
@@ -276,7 +316,7 @@ artifacts/                   store/, retrieval.jsonl, submission/ (gitignored)
   chạy lại `scripts/06_gen_validation.py` nếu cần đánh giá offline.
 - vLLM API trôi giữa version: `VllmBatchClient` tự drop kwarg không hỗ trợ.
   T4 lỗi V1/compute-capability → pin `vllm==0.7.3`.
-- Notebook yêu cầu đúng một payload schema v2 và kiểm SHA-256 mọi file runtime;
+- Notebook P2.2 hiện hành yêu cầu đúng một payload schema 6 và kiểm SHA-256 mọi runtime/mask;
   attach nhiều phiên bản payload hoặc payload chưa upload lại sẽ dừng ngay.
 - Windows console: mọi script đã gọi `setup_stdout()` (UTF-8).
 - Corpus TiniX license CC BY-NC 4.0 — ghi nguồn, phi thương mại.

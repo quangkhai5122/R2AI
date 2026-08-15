@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vifinqa.local/schemas/p24_gold_ast_extension.schema.json",
+  "title": "P2.4 typed AST operation extension",
+  "type": "string",
+  "enum": [
+    "power", "min", "max", "median", "count_true",
+    "gt", "ge", "lt", "le", "eq", "ne", "and", "or", "if_else",
+    "argmax_project", "argmin_project"
+  ]
+}

@@ -1,0 +1,65 @@
+from types import SimpleNamespace
+
+import pandas as pd
+import pytest
+
+from vifinqa.codegen.executor import run_code
+from vifinqa.codegen.selection_v2 import (
+    IRValidationError,
+    _question_money_literals,
+    compile_program,
+)
+
+
+def _candidate(value: float):
+    return SimpleNamespace(
+        var="df1", row=1, col=1, label="Luu chuyen tien thuan tu HDKD",
+        code="20", col_name="Nam nay", value=value, unit_scale=1.0,
+        score=100.0, rescue=False, fact_year=2025, report_year=2025,
+        fact_slot="F1", fact_role="filter",
+        fact_metric="dong tien thuan tu hoat dong kinh doanh",
+        ticker="AAA", report_id="AAA_2025", table_pos=1,
+        metric_grounded=True,
+    )
+
+
+def _program(literal_type: str) -> dict:
+    return {
+        "schema_version": 2, "output_type": "count",
+        "facts": {"F1": {"ref": 1, "as": "money"}}, "bindings": {},
+        "root": {"op": "count_true", "args": [{
+            "op": "gt", "args": [
+                {"var": "F1"}, {"literal": 1e12, "type": literal_type},
+            ],
+        }]},
+    }
+
+
+def test_question_money_literals_parse_vietnamese_financial_scales():
+    assert _question_money_literals(
+        "lon hon 1 nghin ty dong, 40 ty dong va 2,5 trieu VND"
+    ) == {1e12, 40e9, 2.5e6}
+
+
+def test_money_threshold_compiles_in_base_vnd_and_executes():
+    candidate = _candidate(1_200_000_000_000.0)
+    compiled = compile_program(
+        _program("money"), [candidate],
+        {"output_type": "count", "unit_scale": 1, "years": [2025]},
+        "Dong tien lon hon 1 nghin ty dong trong nam 2025?",
+    )
+    dfs = {"df1": pd.DataFrame([{
+        "row": 1, "col": 1, "value": candidate.value,
+        "unit_scale": 1.0, "label": candidate.label,
+        "col_name": candidate.col_name,
+    }])}
+    assert run_code(compiled.query, dfs)["value"] == 1.0
+
+
+def test_nonzero_money_threshold_cannot_be_mislabeled_as_number():
+    with pytest.raises(IRValidationError, match="neither a safe identity"):
+        compile_program(
+            _program("number"), [_candidate(1_200_000_000_000.0)],
+            {"output_type": "count", "unit_scale": 1, "years": [2025]},
+            "Dong tien lon hon 1 nghin ty dong trong nam 2025?",
+        )

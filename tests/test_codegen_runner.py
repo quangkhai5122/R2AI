@@ -434,6 +434,83 @@ class HfOomRetryTests(unittest.TestCase):
         self.assertEqual(len(results), 4)
         self.assertTrue(all(len(group) == 1 for group in results))
 
+    def test_cuda_oom_at_batch_one_splits_return_sequences(self):
+        class FakeTensor:
+            def __init__(self, batch):
+                self.batch = batch
+                self.shape = (batch, 3)
+
+        class FakeEncoding(dict):
+            def __init__(self, batch):
+                super().__init__(input_ids=FakeTensor(batch))
+
+            def to(self, _device):
+                return self
+
+        class FakeOutput:
+            def __init__(self, size):
+                self.size = size
+
+            def __getitem__(self, _key):
+                return [None] * self.size
+
+        class FakeTokenizer:
+            pad_token_id = 0
+
+            def apply_chat_template(self, conversation, **_kwargs):
+                return conversation[0]["content"]
+
+            def __call__(self, texts, **_kwargs):
+                return FakeEncoding(len(texts))
+
+            def batch_decode(self, seqs, **_kwargs):
+                return [f"sample-{i}" for i in range(len(seqs))]
+
+        class FakeModel:
+            def __init__(self):
+                self.calls = []
+
+            def generate(self, **kwargs):
+                call = (kwargs["input_ids"].batch,
+                        kwargs["num_return_sequences"])
+                self.calls.append(call)
+                if kwargs["num_return_sequences"] > 1:
+                    raise RuntimeError("CUDA out of memory")
+                return FakeOutput(1)
+
+        class FakeCuda:
+            def is_available(self):
+                return True
+
+            def empty_cache(self):
+                pass
+
+        @contextmanager
+        def inference_mode():
+            yield
+
+        fake_torch = types.ModuleType("torch")
+        fake_torch.cuda = FakeCuda()
+        fake_torch.inference_mode = inference_mode
+        fake_tqdm = types.ModuleType("tqdm")
+        fake_tqdm.tqdm = lambda **_kwargs: SimpleNamespace(
+            update=lambda _n: None, close=lambda: None
+        )
+
+        client = HfBatchClient.__new__(HfBatchClient)
+        client.batch_size = 1
+        client.max_input = 100
+        client.device = "cuda:0"
+        client.tok = FakeTokenizer()
+        client.model = FakeModel()
+        conversations = [[{"role": "user", "content": "long prompt"}]]
+        with patch.dict(sys.modules, {"torch": fake_torch, "tqdm": fake_tqdm}):
+            results = client.chat_batch(
+                conversations, n=2, temperature=0.2, max_tokens=32,
+            )
+        self.assertEqual(client.model.calls, [(1, 2), (1, 1), (1, 1)])
+        self.assertEqual(results, [["sample-0", "sample-0"]])
+
 
 class PayloadManifestTests(unittest.TestCase):
     def test_manifest_verification_detects_tampering(self):
@@ -447,6 +524,9 @@ class PayloadManifestTests(unittest.TestCase):
                 "code/vifinqa/codegen/prompts.py",
                 "code/vifinqa/codegen/executor.py",
                 "code/vifinqa/codegen/selection.py",
+                "code/vifinqa/codegen/atomic_slots.py",
+                "code/vifinqa/codegen/selection_v2.py",
+                "code/vifinqa/codegen/selection_v2_prompt.py",
                 "code/vifinqa/retrieval/shortlist.py",
                 "code/vifinqa/utils/viet_text.py",
             ]
@@ -544,7 +624,7 @@ class PayloadManifestTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(content)
             manifest = builder._build_manifest(out)
-            self.assertEqual(manifest["schema_version"], 4)
+            self.assertEqual(manifest["schema_version"], builder.PAYLOAD_SCHEMA_VERSION)
             self.assertEqual(manifest["fuzzy_scorer"], fuzzy_scorer_provenance())
             self.assertEqual(set(manifest["files"]), {
                 "retrieval.jsonl", "code/kaggle_codegen.py",

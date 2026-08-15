@@ -15,6 +15,66 @@ All clients share one interface:
 from __future__ import annotations
 
 
+class GenerationSample(str):
+    """A string-compatible response carrying non-semantic stop metadata."""
+
+    def __new__(cls, text: str, *, finish_reason: str = "unknown",
+                token_count: int | None = None,
+                max_tokens: int | None = None):
+        obj = super().__new__(cls, str(text or ""))
+        obj.finish_reason = str(finish_reason or "unknown")
+        obj.token_count = token_count
+        obj.max_tokens = max_tokens
+        obj.hit_max_tokens = obj.finish_reason == "length"
+        return obj
+
+
+def _token_ids(row):
+    if hasattr(row, "tolist"):
+        try:
+            row = row.tolist()
+        except Exception:
+            return None
+    if not isinstance(row, (list, tuple)):
+        return None
+    values = []
+    for value in row:
+        try:
+            values.append(int(value))
+        except (TypeError, ValueError):
+            return None
+    return values
+
+
+def _annotate_hf(decoded, generated, *, max_tokens: int,
+                 eos_token_id, pad_token_id):
+    rows = list(generated) if isinstance(generated, (list, tuple)) \
+        else [generated[index] for index in range(len(decoded))]
+    samples = []
+    eos_ids = eos_token_id if isinstance(eos_token_id, (list, tuple, set)) \
+        else [eos_token_id]
+    eos_ids = {int(value) for value in eos_ids if value is not None}
+    if pad_token_id is not None:
+        eos_ids.add(int(pad_token_id))
+    for index, text in enumerate(decoded):
+        ids = _token_ids(rows[index]) if index < len(rows) else None
+        if ids is None:
+            samples.append(GenerationSample(text, max_tokens=max_tokens))
+            continue
+        stop_at = next((position for position, token in enumerate(ids)
+                        if token in eos_ids), None)
+        if stop_at is not None:
+            count, reason = stop_at + 1, "stop"
+        else:
+            count = len(ids)
+            reason = "length" if count >= max_tokens else "unknown"
+        samples.append(GenerationSample(
+            text, finish_reason=reason, token_count=count,
+            max_tokens=max_tokens,
+        ))
+    return samples
+
+
 class NoLLM:
     name = "none"
 
@@ -97,6 +157,11 @@ class HfBatchClient:
                     out = self.model.generate(**enc, **gen_kwargs)
                 new = out[:, enc["input_ids"].shape[1]:]
                 dec = self.tok.batch_decode(new, skip_special_tokens=True)
+                dec = _annotate_hf(
+                    dec, new, max_tokens=max_tokens,
+                    eos_token_id=getattr(self.tok, "eos_token_id", None),
+                    pad_token_id=getattr(self.tok, "pad_token_id", None),
+                )
             except RuntimeError as e:
                 if "out of memory" not in str(e).lower():
                     if bar:
@@ -107,11 +172,40 @@ class HfBatchClient:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 if len(idx) <= 1:
+                    # batch-size=1 still expands the KV cache by
+                    # num_return_sequences. Retry one sample at a time first.
+                    if n > 1:
+                        print(
+                            f"[hf-oom] item {cursor}: retrying n={n} as "
+                            "sequential n=1 samples",
+                            flush=True,
+                        )
+                        try:
+                            dec = self._generate_sequential_samples(
+                                texts[idx[0]], n=n, temperature=temperature,
+                                max_tokens=max_tokens, torch=torch, gc=gc,
+                            )
+                        except RuntimeError as sequential_error:
+                            if bar:
+                                bar.close()
+                            if "out of memory" not in str(sequential_error).lower():
+                                raise
+                            raise RuntimeError(
+                                "CUDA OOM for one HF prompt even with n=1; "
+                                "use a fingerprinted tail mask with lower "
+                                "--max-input-tokens/--max-tokens"
+                            ) from sequential_error
+                        results[idx[0]] = dec
+                        cursor += 1
+                        if bar:
+                            bar.update(1)
+                        continue
                     if bar:
                         bar.close()
                     raise RuntimeError(
-                        "CUDA OOM even at HF batch-size=1; reduce --k, "
-                        "--max-input-tokens or --max-tokens"
+                        "CUDA OOM for one HF prompt with n=1; use a "
+                        "fingerprinted tail mask with lower "
+                        "--max-input-tokens/--max-tokens"
                     ) from e
                 adaptive_batch = max(1, len(idx) // 2)
                 print(f"[hf-oom] retrying from item {cursor} with batch="
@@ -127,6 +221,50 @@ class HfBatchClient:
         if bar:
             bar.close()
         return results
+
+    def _generate_sequential_samples(self, text, *, n, temperature,
+                                     max_tokens, torch, gc):
+        """Generate one return sequence at a time after an n-way KV-cache OOM."""
+        decoded = []
+        for _sample in range(n):
+            enc = out = new = None
+            try:
+                enc = self.tok(
+                    [text], return_tensors="pt", padding=True,
+                    truncation=True, max_length=self.max_input,
+                ).to(self.device)
+                kwargs = {
+                    "max_new_tokens": max_tokens,
+                    "num_return_sequences": 1,
+                    "pad_token_id": self.tok.pad_token_id,
+                }
+                if temperature and temperature > 0:
+                    kwargs.update(
+                        do_sample=True, temperature=temperature, top_p=0.95,
+                    )
+                else:
+                    kwargs.update(do_sample=False)
+                with torch.inference_mode():
+                    out = self.model.generate(**enc, **kwargs)
+                new = out[:, enc["input_ids"].shape[1]:]
+                one = self.tok.batch_decode(new, skip_special_tokens=True)
+                one = _annotate_hf(
+                    one, new, max_tokens=max_tokens,
+                    eos_token_id=getattr(self.tok, "eos_token_id", None),
+                    pad_token_id=getattr(self.tok, "pad_token_id", None),
+                )
+                if len(one) != 1:
+                    raise RuntimeError(
+                        "HF sequential fallback returned an unexpected "
+                        f"sample count: {len(one)}"
+                    )
+                decoded.append(one[0])
+            finally:
+                del enc, out, new
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        return decoded
 
 
 class VllmBatchClient:
@@ -169,7 +307,12 @@ class VllmBatchClient:
                             top_p=0.95 if temperature > 0 else 1.0,
                             max_tokens=max_tokens, seed=self.seed)
         outs = self.llm.chat(conversations, sp)   # order preserved
-        return [[o.text for o in out.outputs] for out in outs]
+        return [[GenerationSample(
+            o.text,
+            finish_reason=str(getattr(o, "finish_reason", "unknown") or "unknown"),
+            token_count=len(getattr(o, "token_ids", []) or []) or None,
+            max_tokens=max_tokens,
+        ) for o in out.outputs] for out in outs]
 
 
 class OpenAIClient:
@@ -188,6 +331,11 @@ class OpenAIClient:
                 r = self.client.chat.completions.create(
                     model=self.model, messages=msgs,
                     temperature=temperature, max_tokens=max_tokens)
-                samples.append(r.choices[0].message.content or "")
+                choice = r.choices[0]
+                samples.append(GenerationSample(
+                    choice.message.content or "",
+                    finish_reason=str(choice.finish_reason or "unknown"),
+                    max_tokens=max_tokens,
+                ))
             out.append(samples)
         return out

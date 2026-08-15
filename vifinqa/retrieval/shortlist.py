@@ -12,14 +12,26 @@ plus small bonuses for a matching VAS code and for the qualifier
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, asdict
 
+from ..extraction.unit_policy import resolve_stored_table_unit
 from ..router.metric_phrase import has_qualifier
-from ..utils.viet_text import label_metric_score, norm
+from ..utils.viet_text import label_metric_score, norm, tokens
 from .serialize import df_roundtrip
 
 _QUALIFIERS = ("ngan han", "dai han", "hop nhat", "rieng")
+_GROUNDING_STOP = {
+    "cua", "tai", "vao", "den", "ngay", "nam", "cuoi", "dau",
+    "trong", "cho", "theo", "tinh", "ghi", "nhan", "so", "tien",
+    "muc", "la", "co", "cac", "va", "bao", "nhieu", "lon", "nho",
+    "cao", "thap", "it", "hon", "khong", "bang", "tu", "tren",
+}
+_ANCHOR_STOP = _GROUNDING_STOP | {
+    "cong", "ty", "ctcp", "co", "phan", "tnhh", "tap", "doan",
+    "tong", "ngan", "hang", "thuong", "mai",
+}
 
 
 @dataclass
@@ -33,11 +45,17 @@ class Candidate:
     col: int
     col_name: str
     value: float
-    unit_scale: float
+    unit_scale: float  # effective scale used by codegen
     score: float
     lexical: float
     semantic: float
     rescue: bool = False
+    unit_original_scale: float | None = None
+    unit_source: str = "unknown"
+    unit_effective_source: str = "unknown"
+    unit_resolution: str = "stored_unit"
+    unit_context_terminal_vnd: bool = False
+    unit_context_sha256: str = ""
     # Provenance shown to the selection model. ``fact_slot`` is empty for the
     # legacy/global shortlist and F1/F2/... for a fact-aware shortlist.
     ticker: str = ""
@@ -47,6 +65,10 @@ class Candidate:
     fact_year: int | None = None
     fact_metric: str = ""
     fact_role: str = "value"
+    fact_period_role: str = "same_period"
+    metric_grounded: bool = True
+    metric_grounding_score: float = 0.0
+    metric_grounding_reason: str = "legacy"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -225,17 +247,215 @@ def _attach_metadata(cands: list[Candidate], tables: list[dict],
          str(t.get("var", ""))): t
         for t in tables
     }
+    fact = fact or {}
     for cand in cands:
         table = by_key.get((cand.report_id, cand.table_pos, cand.var), {})
+        context = str(table.get("context") or "")
+        stored_scale = table.get("unit_scale")
+        if stored_scale is None:
+            stored_scale = cand.unit_scale
+        unit = resolve_stored_table_unit(
+            stored_scale, table.get("unit_source"), context,
+        )
+        cand.unit_original_scale = unit.stored_scale
+        cand.unit_scale = unit.effective_scale
+        cand.unit_source = unit.stored_source
+        cand.unit_effective_source = unit.effective_source
+        cand.unit_resolution = unit.reason
+        cand.unit_context_terminal_vnd = unit.terminal_bare_vnd
+        cand.unit_context_sha256 = (
+            hashlib.sha256(context.encode("utf-8")).hexdigest() if context else ""
+        )
         cand.ticker = str(table.get("ticker") or
                           _ticker_from_report(cand.report_id))
         cand.report_year = _as_year(table.get("report_year"))
         cand.fact_slot = fact_slot
-        cand.fact_ticker = str((fact or {}).get("ticker") or "")
-        cand.fact_year = _as_year((fact or {}).get("year"))
-        cand.fact_metric = str((fact or {}).get("metric") or "")
-        cand.fact_role = str((fact or {}).get("role") or "value")
+        cand.fact_ticker = str(fact.get("ticker") or "")
+        cand.fact_year = _as_year(fact.get("year"))
+        cand.fact_metric = str(fact.get("metric") or "")
+        cand.fact_role = str(fact.get("role") or "value")
+        cand.fact_period_role = str(
+            fact.get("period_role") or "same_period")
+        grounded, score, reason = _metric_grounding(cand, fact, context)
+        cand.metric_grounded = grounded
+        cand.metric_grounding_score = round(float(score), 1)
+        cand.metric_grounding_reason = reason
     return cands
+
+
+def _metric_grounding(candidate: Candidate, fact: dict,
+                      context: str) -> tuple[bool, float, str]:
+    """Return a conservative semantic proof for a fact/candidate pair."""
+    metric = norm(str(fact.get("metric") or ""))
+    if not fact:
+        return True, 0.0, "legacy_global_shortlist"
+    if not bool(fact.get("route_grounded", True)):
+        return False, 0.0, "route_not_grounded"
+    terms = _content_terms(metric, _GROUNDING_STOP)
+    if not terms:
+        return False, 0.0, "metric_has_no_content_terms"
+
+    label = str(candidate.label or "")
+    column = str(candidate.col_name or "")
+    direct_text = norm(f"{label} {column}")
+    combined_text = norm(f"{direct_text} {context}")
+    direct_tokens = set(tokens(direct_text))
+    combined_tokens = set(tokens(combined_text))
+    direct_coverage = len(terms & direct_tokens) / len(terms)
+    combined_coverage = len(terms & combined_tokens) / len(terms)
+    direct_score = max(
+        label_metric_score(label, metric),
+        0.9 * label_metric_score(column, metric),
+    )
+    score = max(direct_score, 100.0 * direct_coverage,
+                90.0 * combined_coverage)
+
+    year_ok, year_reason = _candidate_year_grounding(
+        candidate, context, fact.get("year"))
+    if not year_ok:
+        return False, score, year_reason
+
+    candidate_period = _candidate_period_role(direct_text)
+    fact_period = str(fact.get("period_role") or "same_period")
+    if fact_period == "ending" and candidate_period == "beginning":
+        return False, score, "period_contradiction:expected_ending"
+    if fact_period == "beginning" and candidate_period == "ending":
+        return False, score, "period_contradiction:expected_beginning"
+    if "no vay" in metric and re.search(
+            r"tien tra no goc vay|tra no vay|luu chuyen tien", direct_text):
+        return False, score, "metric_domain_mismatch:cashflow_not_debt"
+    label_norm, column_norm = norm(label), norm(column)
+    if re.search(r"so da trinh bay|so trinh bay lai|dieu chinh", column_norm):
+        return False, score, "presentation_state_ambiguous"
+    if "chi phi du phong rui ro tin dung" in metric:
+        if "loi nhuan" in label_norm:
+            return False, score, "metric_domain_mismatch:profit_not_provision"
+        if "chi phi" not in label_norm:
+            return False, score, "metric_domain_mismatch:stock_not_expense"
+        if re.search(r"mien bac|mien trung|mien nam", column_norm):
+            return False, score, "metric_scope_mismatch:segment_not_total"
+
+    expected_codes = _expected_codes([metric])
+    actual_code = _normal_code(candidate.code)
+    if expected_codes and actual_code and actual_code.isdigit() \
+            and actual_code not in expected_codes:
+        return False, score, f"vas_code_mismatch:{actual_code}"
+    if expected_codes and (not actual_code or not actual_code.isdigit()) \
+            and direct_coverage < 0.80:
+        return False, score, "vas_code_missing_with_weak_metric_match"
+
+    anchors = [norm(value) for value in fact.get("semantic_anchors") or []
+               if norm(value)]
+    for anchor in anchors:
+        anchor_terms = _content_terms(anchor, _ANCHOR_STOP)
+        if not anchor_terms:
+            continue
+        anchor_hits = anchor_terms & direct_tokens
+        digit_terms = {term for term in anchor_terms
+                       if any(char.isdigit() for char in term)}
+        if not digit_terms <= direct_tokens \
+                or len(anchor_hits) / len(anchor_terms) < 0.80:
+            return False, score, f"entity_anchor_missing:{anchor}"
+
+    if expected_codes and actual_code in expected_codes \
+            and direct_coverage >= 0.35:
+        return True, score, "exact_vas_code"
+    split_layout = (
+        metric.startswith("con lai cua ")
+        and "so du cuoi" in norm(label)
+        and direct_coverage >= 0.60
+    )
+    if split_layout:
+        return True, score, "metric_match:ending_balance_column_layout"
+    if len(terms) == 1:
+        passed = len(next(iter(terms))) >= 4 and direct_coverage == 1.0
+    elif len(terms) == 2:
+        passed = direct_coverage == 1.0
+    else:
+        passed = direct_coverage >= 0.75 and direct_score >= 35.0
+    if passed:
+        return True, score, (
+            f"metric_match:direct={direct_coverage:.2f},"
+            f"context={combined_coverage:.2f}"
+        )
+    return False, score, (
+        f"metric_mismatch:direct={direct_coverage:.2f},"
+        f"context={combined_coverage:.2f}"
+    )
+
+
+def _content_terms(text: str, stop: set[str]) -> set[str]:
+    return {token for token in tokens(text)
+            if token not in stop and len(token) > 1
+            and not re.fullmatch(r"(?:19|20)\d{2}|[-+]?\d+(?:\.\d+)?", token)}
+
+
+def _normal_code(value: str) -> str:
+    return re.sub(r"\.0$", "", str(value or "").strip())
+
+
+def _candidate_year_grounding(candidate: Candidate,
+                              context: str,
+                              requested_year=None) -> tuple[bool, str]:
+    fact_year = _as_year(requested_year)
+    if fact_year is None:
+        fact_year = _as_year(candidate.fact_year)
+    if fact_year is None:
+        return True, "year_not_requested"
+    report_year = _as_year(candidate.report_year)
+    column = norm(str(candidate.col_name or ""))
+    column_years = {
+        int(value) for value in re.findall(
+            r"(?<!\d)((?:19|20)\d{2})(?!\d)", column,
+        )
+    }
+    if column_years:
+        passed = fact_year in column_years
+        return passed, (
+            "explicit_column_year"
+            if passed else f"year_mismatch:column={sorted(column_years)}"
+        )
+    inferred = None
+    if re.search(r"nam nay|ky nay", column):
+        inferred = report_year
+    elif re.search(r"nam truoc|ky truoc|so du dau|dau nam|dau ky", column):
+        inferred = report_year - 1 if report_year is not None else None
+    if inferred is not None:
+        return inferred == fact_year, (
+            "relative_column_year"
+            if inferred == fact_year else f"year_mismatch:relative={inferred}"
+        )
+
+    context_years = {
+        int(value) for value in re.findall(
+            r"(?<!\d)((?:19|20)\d{2})(?!\d)", norm(context),
+        )
+    }
+    if len(context_years) == 1:
+        context_year = next(iter(context_years))
+        return context_year == fact_year, (
+            "explicit_context_year"
+            if context_year == fact_year
+            else f"year_mismatch:context={context_year}"
+        )
+    if len(context_years) > 1:
+        return False, f"year_ambiguous:context={sorted(context_years)}"
+    if report_year is not None and report_year != fact_year:
+        return False, f"year_mismatch:report={report_year}"
+    return True, "report_year_match"
+
+
+def _candidate_period_role(text: str) -> str:
+    text = norm(text)
+    ending = bool(re.search(r"so du cuoi|cuoi nam|cuoi ky|31\s*/\s*12", text))
+    beginning = bool(re.search(
+        r"so du dau|dau nam|dau ky|(?<!\d)0?1\s*/\s*0?1(?!\d)", text,
+    ))
+    if ending and not beginning:
+        return "ending"
+    if beginning and not ending:
+        return "beginning"
+    return "mixed" if ending and beginning else "same_period"
 
 
 def _tables_for_fact(tables: list[dict], fact: dict) -> list[dict]:
@@ -327,6 +547,8 @@ def _year_status(col_name: str, years: list[int] | None) -> str:
 
 # Thong tu 200 line codes: the OCR-stable identity of a financial line item.
 VAS_CODE_HINTS: list[tuple[str, set[str]]] = [
+    ("luu chuyen tien thuan tu hoat dong kinh doanh", {"20"}),
+    ("dong tien thuan tu hoat dong kinh doanh", {"20"}),
     ("doanh thu thuan", {"10"}),
     ("doanh thu ban hang va cung cap dich vu", {"01", "1"}),
     ("gia von hang ban", {"11"}),

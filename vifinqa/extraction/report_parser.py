@@ -15,6 +15,7 @@ from pathlib import Path
 from ..utils.viet_num import parse_vn_number, is_year_like
 from ..utils.viet_text import strip_diacritics
 from .html_tables import iter_tables, parse_grid
+from .unit_policy import has_terminal_bare_vnd
 
 # regex on diacritic-stripped lowercase text
 _UNIT_EXPL = re.compile(
@@ -32,12 +33,13 @@ _UNIT_HEADER = re.compile(r"(nghin\s*ty|ngan\s*ty|tram\s*ty|ty|trieu|nghin|ngan)
 
 
 def detect_unit(context: str, header_text: str = "") -> tuple[float | None, str | None]:
-    """Return (scale, source) with source in {explicit, header, bare} or (None, None).
+    """Return a detected scale/source, or (None, None).
 
     Priority: explicit "Don vi (tinh): ..." declaration > unit token inside the
     table header (e.g. '31/12/2018 VND', 'Trieu VND') > bare unit phrase in the
     last chars right before the table (rejected when preceded by a digit — that
-    is prose like 'trai phieu 100 ty dong', not a unit declaration).
+    is prose like 'trai phieu 100 ty dong', not a unit declaration) > a terminal
+    unqualified VND token used by audited statement headings.
     """
     ctx = re.sub(r"\s+", " ", strip_diacritics(context).lower())
     m = _UNIT_EXPL.search(ctx)
@@ -66,6 +68,8 @@ def detect_unit(context: str, header_text: str = "") -> tuple[float | None, str 
         if not prose and not any(b in window for b in _UNIT_BAD_CTX):
             word = re.sub(r"\s+", " ", m.group(1).strip())
             return _SCALE.get(word, 1.0), "bare"
+    if has_terminal_bare_vnd(ctx):
+        return 1.0, "terminal_vnd"
     return None, None
 
 
@@ -81,7 +85,7 @@ class TableRec:
     n_rows: int
     n_cols: int
     unit_scale: float | None
-    unit_source: str       # explicit | sticky | none
+    unit_source: str       # explicit | header | bare | terminal_vnd | sticky | none
     context: str           # cleaned text right before the table
     grid: list = field(repr=False, default_factory=list)
 

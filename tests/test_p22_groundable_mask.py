@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _module():
+    path = ROOT / "scripts" / "51_make_p22_groundable_mask.py"
+    spec = importlib.util.spec_from_file_location("p22_groundable_mask", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_frozen_stage_b_shortlist_yields_15_groundable_ids():
+    module = _module()
+    mask = module.build_groundable_mask(
+        ROOT / "artifacts" / "p22_targets" / "p22b_shortlist_audit.json",
+        ROOT / "artifacts" / "p22_targets" / "p22b_rejected_non_year.json",
+        ROOT / "artifacts" / "retrieval.jsonl",
+    )
+    assert mask["count"] == 15
+    assert 855 in mask["ids"]
+    assert mask["excluded"]["count"] == 40
+    assert set(mask["ids"]).isdisjoint(mask["excluded"]["ids"])
+
+def test_frozen_stage_c_shortlist_yields_31_groundable_ids():
+    module = _module()
+    mask = module.build_groundable_mask(
+        ROOT / "artifacts" / "p22_targets" / "p22c_shortlist_audit.json",
+        ROOT / "artifacts" / "p22_targets" / "p22c_rescue_fact_complete.json",
+        ROOT / "artifacts" / "retrieval.jsonl",
+        expected_count=31, expect_rescue=True,
+    )
+    assert mask["count"] == 31
+    assert mask["excluded"]["count"] == 17
+
+
+
+def test_groundable_mask_policy_is_label_free():
+    source = (ROOT / "scripts" / "51_make_p22_groundable_mask.py").read_text(
+        encoding="utf-8",
+    ).lower()
+    assert "p24_locked" not in source
+    assert "gold" not in source

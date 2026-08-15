@@ -2,13 +2,16 @@
 
 > Lệnh vận hành và artifact chuẩn nằm trong `RUNBOOK.md`. Nếu ví dụ lịch sử ở tài liệu
 > khác mâu thuẫn, luôn theo RUNBOOK.
+>
+> **Lượt hiện hành là P2.2 semantic-grounded v5, payload schema 8; chạy B=2 trước rồi dừng.**
+> Command đầy đủ: `RUNBOOK_P2_2_STRUCTURED_SELECTION_V2.md`.
 
 Pipeline hiện tại:
-**structured routing → BM25 trong báo cáo đã khoá → rule/fact-aware shortlist →
-Qwen2.5-Coder-14B chọn Selection JSON → compiler/semantic guard → hybrid → submission.zip**
+**structured routing → BM25 → atomic metric-slot shortlist → Qwen2.5-Coder-14B chọn
+typed nested IR → deterministic compiler/semantic guard → fill-only hybrid → submission.zip**
 
 Phần **CPU chạy local**, phần **GPU chạy Kaggle** (14B NF4/HF). Hai bên trao đổi qua
-payload schema 4 có manifest SHA-256, fuzzy-scorer contract và codegen JSONL có
+payload schema 8 có manifest/mask SHA-256, fuzzy-scorer contract và codegen JSONL có
 `run_signature`/checkpoint hoàn tất-attempt.
 
 ```
@@ -17,10 +20,10 @@ Local (CPU)                                Kaggle (GPU T4 x2)
 01_build_store.py    parse 1.973 báo cáo   
 02_retrieve.py       router + BM25         
 03_rule_baseline.py  baseline KHÔNG cần GPU
-04_make_kaggle_payload.py ──► upload ────► vifinqa-codegen.ipynb
+04_make_kaggle_payload.py ──► upload ────► vifinqa-codegen-p22.ipynb
                                            (Qwen2.5-Coder-14B + NF4/HF
-                                            + Selection + semantic guard)
-11_merge_codegen_hybrid.py ◄ download ◄──── codegen_sel14b_rescue.jsonl
+                                            + typed IR + semantic guard)
+11_merge_codegen_hybrid.py ◄ download ◄──── codegen_p22{b,c}_sel14b.jsonl
 05_build_submission.py
         │
         ▼
@@ -66,12 +69,14 @@ python scripts/05_build_submission.py
 ```powershell
 python scripts/04_make_kaggle_payload.py --dry-run `
   --retrieval artifacts/retrieval.jsonl `
+  --target-dir artifacts/p22_targets `
   --dataset-id lequangkhai5122005/vifinqa-payload
 python scripts/04_make_kaggle_payload.py `
   --retrieval artifacts/retrieval.jsonl `
+  --target-dir artifacts/p22_targets `
   --dataset-id lequangkhai5122005/vifinqa-payload
 kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip `
-  -m "P2.1r frozen-scorer rescue-empty"
+  -m "P2.2 schema8 semantic v5 B2 C4"
 ```
 Lệnh `version` ở trên dành cho dataset đã có ID `lequangkhai5122005/vifinqa-payload`.
 Chỉ dùng `kaggle datasets create` khi tạo dataset lần đầu. Không dùng CLI thì mở
@@ -82,43 +87,41 @@ Khi cập nhật code/store/retrieval: rebuild payload rồi chạy
 Builder giữ lại dataset ID cũ và sinh `payload-manifest.json`; notebook từ chối payload cũ hoặc lệch hash.
 
 ### 2.3. Tạo & chạy notebook
-1. **Kaggle → Code → New Notebook** → **File → Import Notebook** → chọn `kaggle/vifinqa-codegen.ipynb` trong repo này.
+1. **Kaggle → Code → New Notebook** → **File → Import Notebook** → chọn `kaggle/vifinqa-codegen-p22.ipynb`.
 2. Panel phải: **Accelerator = GPU T4 x2**, **Internet = On**, **Add Input** → chọn dataset `vifinqa-payload` của bạn.
 3. Chạy lần lượt các cell (notebook yêu cầu đúng một payload, kiểm manifest rồi copy nguyên trạng code sang `/kaggle/working`):
    - cài `transformers accelerate bitsandbytes` (~1–2 phút)
-   - **smoke test 12 câu** — kiểm tra output trước
-   - **full run** (`select/empty`, dynamic `--k 0`, rescue 20/28; runner ghi baseline trước và checkpoint theo chunk)
-   - trước khi để full run tiếp tục, log phải có lần lượt `payload verified: schema=4`,
+   - **smoke v2 12 câu** bằng output riêng;
+   - **Stage B-semantic-v5**: mask 2 câu, không rescue; download/audit trước;
+   - Run All tự dừng ở `APPROVE_STAGE_C=False`; đây là hành vi đúng;
+   - **Stage C-semantic-v5**: mask 4 câu, chỉ bật sau khi B được audit local;
+   - log phải có lần lượt `payload verified: schema=8`,
      `fuzzy scorer: backend=difflib.SequenceMatcher version=1`, `run signature: ...`,
-     `baseline written (...)`, `LLM queue: ...`, rồi
+     `baseline written (...)`, B `LLM queue: 2` hoặc C `LLM queue: 4`, rồi
      `[chunk 1/...]`. Nếu vẫn thấy `LLM round 1: 1012 prompts`, bạn đang chạy
      notebook hoặc payload cũ: dừng phiên, gỡ input cũ và attach version mới.
 4. **Backend là transformers, KHÔNG phải vLLM.** vLLM bản mới (V1 engine) không khởi động được trên T4 (Turing/SM75) — lỗi `Engine core initialization failed` — và engine V0 hỗ trợ T4 đã bị xoá khỏi vLLM. Notebook dùng `--backend hf`: chậm hơn nhưng chạy chắc. Muốn thử vLLM thì pin `vllm==0.7.3` (`--backend vllm`, xem cell cuối notebook).
-5. Model cho lượt hiện tại là `Qwen/Qwen2.5-Coder-14B-Instruct` + 4-bit NF4;
-   smoke dùng target `all`, file riêng, còn full dùng target `empty`.
-6. Tải `codegen_sel14b_rescue.jsonl` từ tab **Output** về máy.
+5. Model hiện tại là `Qwen/Qwen2.5-Coder-14B-Instruct` + 4-bit NF4, `n=2`, T=0.2.
+6. Trước tiên chỉ tải `codegen_p22b_semantic_v5_sel14b.jsonl`; chưa chạy/tải C.
 
 Chạy nền không cần giữ tab: **Save Version → Save & Run All (Commit)** — kết quả nằm trong tab Output của version.
 
 ### 2.4. Về local, đóng gói nộp
-```powershell
-python scripts/11_merge_codegen_hybrid.py `
-  --primary artifacts/codegen_p21r_year_only_v3.jsonl `
-  --fallback <thư_mục_tải_về>\codegen_sel14b_rescue.jsonl `
-  --out artifacts/codegen_hybrid_p21r_rescue.jsonl `
-  --audit artifacts/codegen_hybrid_p21r_rescue.audit.json
-python scripts/05_build_submission.py `
-  --retrieval artifacts/retrieval.jsonl `
-  --codegen artifacts/codegen_hybrid_p21r_rescue.jsonl `
-  --out-dir artifacts/submission_hybrid_p21r_rescue --sub-k 5
-```
+
+Theo đúng thứ tự audit raw → CPU replay bằng grounded compiler → audit replay → hybrid
+fill-only vào frozen #19 → build. Không merge trực tiếp output Kaggle. Lệnh đầy đủ:
+
+- `RUNBOOK_P2_2_STRUCTURED_SELECTION_V2.md`, **mục 11.3** cho B;
+- chỉ sau review B mới dùng mục 11.4 cho C.
+
+Sau khi chạy B, gửi codegen cùng hai audit về review trước khi nộp hoặc bật C.
 
 ### 2.5. Troubleshooting Kaggle
 | Lỗi | Cách xử lý |
 |---|---|
 | `Engine core initialization failed` (vLLM) | V1 engine không chạy trên T4 → dùng `--backend hf` (mặc định notebook) |
 | `unexpected keyword argument 'swap_space'` | đã fix: `VllmBatchClient` tự drop kwarg vLLM không nhận |
-| CUDA OOM | HF runner tự giảm batch `4→2→1`; đổi tay batch/k/token sẽ đổi run signature, nên dùng output mới |
+| CUDA OOM ở batch 1 | Schema 7 dùng batch/checkpoint 1 và tự tách `n=2` thành `n=1+n=1`. Nếu một sample đơn vẫn OOM, tải checkpoint/log; không chạy notebook tail đã retire và không đổi flag trong cùng output |
 | Tải model chậm / hết disk | dùng 7B thay 14B; xoá `/root/.cache/huggingface` giữa các lần |
 | Hết phiên | checkpoint luôn đủ 1.012 dòng; chạy lại cùng `--out`, payload và toàn bộ cờ để resume. Marker completed-attempt giúp không gọi lại cả các Selection đã reject/giữ rule |
 | Log `LLM round 1: 1012 prompts` | notebook/payload cũ, chưa có chunk runner → upload dataset version mới, import lại notebook hiện hành và chỉ attach đúng một payload |
@@ -148,8 +151,11 @@ In ra P/R/F2 macro, Answer Acc, Exec Acc. Bộ synthetic hiện dùng cùng pars
 
 **Trạng thái hiện tại:** submission #19 P2.1r all-types v3 đạt TABLES_F2 `.4439`,
 DOCS_F2 `.8969` và ANSWER/EXEC `.2292`, cao nhất hiện tại. #18 year-only v3 đạt
-`.4426/.8961/.2253`. Đã GO Structured Selection v2 typed nested IR theo RUNBOOK
-§7quater, nhưng chưa triển khai; giữ #19 làm frozen control.
+`.4426/.8961/.2253`. Raw P2.2 semantic-v5 B=2/C=4 đã chạy xong trên Kaggle.
+Compiler v5.1 sửa sticky-unit/bare-VND và CPU replay chấp nhận đủ 6/6; candidate local là
+`artifacts/submission_p22bc_semantic_v51/submission.zip` (SHA-256 bắt đầu
+`58dd6948f1537ffe`). Candidate chỉ fill structural-none, chưa có leaderboard score.
+Giữ #19 làm frozen control và không chạy thêm Qwen trước khi đo v5.1.
 
 `--k` của codegen là số bảng đưa vào prompt (baseline Kaggle hiện dùng 4 để giảm
 prefill/OOM). `--sub-k` khi build submission là số bảng nộp cho grader (giữ 5 theo
@@ -182,6 +188,8 @@ vifinqa/
   codegen/prompts.py       PoT prompt (schema tidy + đơn vị + ANSWER_SCALE)
   codegen/executor.py      sandbox exec, ép scalar float, timeout (POSIX)
   codegen/rule_codegen.py  fallback tất định: fuzzy label + cột năm -> 1 dòng pandas
+  codegen/atomic_slots.py  planner filter/rank/project/numerator/denominator theo fact
+  codegen/selection_v2.py typed nested IR + fail-closed deterministic compiler
   codegen/llm_client.py    HF batch có OOM backoff / vLLM/OpenAI-compatible tuỳ chọn
   codegen/semantic.py      AST dataflow + semantic/output sanity guard
   codegen/generate.py      baseline flush -> LLM chunks -> checkpoint/self-debug -> rule

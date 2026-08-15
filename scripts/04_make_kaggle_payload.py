@@ -24,8 +24,10 @@ from vifinqa import __version__ as vifinqa_version
 from vifinqa.utils.io import setup_stdout, ensure_dir
 from vifinqa.utils.viet_text import fuzzy_scorer_provenance
 
-PAYLOAD_SCHEMA_VERSION = 4
+PAYLOAD_SCHEMA_VERSION = 8
 MANIFEST_NAME = "payload-manifest.json"
+CODE_COPY_IGNORE = shutil.ignore_patterns(
+    "__pycache__", "*.pyc", "*.orig", "*.rej", "*.patch")
 
 
 def _sha256(path: Path) -> str:
@@ -43,7 +45,7 @@ def _build_manifest(out: Path) -> dict:
     after packaging and it is not consumed by the runner.
     """
     files = [out / "retrieval.jsonl"]
-    for dirname in ("code", "store"):
+    for dirname in ("code", "store", "targets"):
         files.extend(p for p in (out / dirname).rglob("*") if p.is_file())
     hashes = {
         p.relative_to(out).as_posix(): _sha256(p)
@@ -99,6 +101,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--store-dir", default=str(config.STORE_DIR))
     ap.add_argument("--retrieval", default=str(config.RETRIEVAL_JSONL))
+    ap.add_argument(
+        "--target-dir", default=str(config.ROOT / "artifacts" / "p22_targets"),
+        help="optional directory of frozen LLM ID masks copied to payload/targets",
+    )
     ap.add_argument("--out", default=str(config.KAGGLE_PAYLOAD_DIR))
     ap.add_argument("--dataset-slug", default="vifinqa-payload")
     ap.add_argument("--dataset-id", default="",
@@ -112,6 +118,9 @@ def main():
     out = _safe_output_path(root, args.out)
     store_dir = Path(args.store_dir).resolve()
     retrieval_path = Path(args.retrieval).resolve()
+    target_dir = Path(args.target_dir).resolve() if str(args.target_dir).strip() else None
+    if target_dir is not None and not target_dir.is_dir():
+        target_dir = None
     code_dir = root / "vifinqa"
     kaggle_entry = root / "kaggle" / "kaggle_codegen.py"
     required = [store_dir / "reports.parquet", retrieval_path,
@@ -127,6 +136,7 @@ def main():
     if args.dry_run:
         print(f"dry-run OK: source store={store_dir}")
         print(f"dry-run OK: retrieval={retrieval_path}")
+        print(f"dry-run OK: target masks={target_dir or '(none)'}")
         print(f"dry-run OK: replace target={out}")
         print(f"dry-run OK: dataset id={dataset_id}")
         return
@@ -136,10 +146,12 @@ def main():
     ensure_dir(out)
 
     shutil.copytree(code_dir, out / "code" / "vifinqa",
-                    ignore=shutil.ignore_patterns("__pycache__"))
+                    ignore=CODE_COPY_IGNORE)
     shutil.copy2(kaggle_entry, out / "code" / "kaggle_codegen.py")
     shutil.copytree(store_dir, out / "store")
     shutil.copy2(retrieval_path, out / "retrieval.jsonl")
+    if target_dir is not None:
+        shutil.copytree(target_dir, out / "targets")
 
     meta = {
         "title": args.dataset_slug,
@@ -156,7 +168,8 @@ def main():
     size_mb = sum(f.stat().st_size for f in out.rglob("*") if f.is_file()) / 1e6
     print(f"payload ready: {out}  ({size_mb:.0f} MB)")
     print(f"payload schema={PAYLOAD_SCHEMA_VERSION}, verified files="
-          f"{len(manifest['files'])}")
+          f"{len(manifest['files'])}, target masks="
+          f"{len(list((out / 'targets').glob('*'))) if (out / 'targets').is_dir() else 0}")
     print("next:")
     if dataset_id.startswith("YOUR_KAGGLE_USERNAME/"):
         print("  1) rerun with --dataset-id <username>/<slug> (recommended), or "

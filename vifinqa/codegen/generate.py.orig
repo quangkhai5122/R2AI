@@ -1,0 +1,1004 @@
+"""Codegen orchestration: batch prompts -> execute -> majority vote ->
+self-debug round(s) -> rule-based fallback.
+
+Batch-first design so vLLM sees big batches (fast on Kaggle T4 x2).
+Outputs codegen_results.jsonl records:
+    {id, answer, pandas_query, used_vars:[{var, report_id, table_pos}],
+     status, source, votes, attempts, detail}
+"""
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import time
+from collections import Counter
+from pathlib import Path
+
+from ..config import CODEGEN_K
+from ..extraction.build_store import Store
+from ..retrieval.serialize import tidy_csv_text, df_roundtrip
+from ..utils.io import read_jsonl, write_jsonl
+from .executor import run_code, extract_code
+from .to_expression import try_to_expression
+from .formulas import describe_for_prompt
+from .atomic_slots import plan_atomic_slots
+from ..retrieval.shortlist import build_shortlist, render_shortlist
+from .prompts import SYSTEM, build_user, SELECT_SYSTEM, build_select_user
+from .rule_codegen import try_rule_answer
+from .rule_composite import try_composite_answer
+from .arbitrate import arbitrate
+from .selection import parse_selection, synthesize, confidence as sel_conf
+from .selection_v2 import evaluate_samples as evaluate_v2_samples
+from .selection_v2_prompt import build_messages as build_select_v2_messages
+from .semantic import (
+    all_dataframe_refs,
+    answer_dataframe_refs,
+    validate_generated_answer,
+)
+
+
+_SELECTION_TRACE_SCHEMA = 1
+_SELECTION_RAW_MAX_CHARS = 2_000
+_SELECTION_REASON_MAX_CHARS = 500
+_LLM_ATTEMPT_STATUS_FIELD = "llm_attempt_status"
+_LLM_ATTEMPT_COMPLETED = "completed"
+_LEGACY_COMPLETED_SELECTION_OUTCOMES = {
+    "accepted", "rejected", "no_candidates", "no_samples",
+}
+
+
+def _mark_llm_attempt_completed(row: dict) -> dict:
+    """Mark a record only after its configured LLM attempt is complete.
+
+    The final answer may still come from a deterministic rule after
+    arbitration, so ``source`` cannot be used as an attempt/completion flag.
+    """
+    row[_LLM_ATTEMPT_STATUS_FIELD] = _LLM_ATTEMPT_COMPLETED
+    return row
+
+
+def _has_completed_llm_attempt(row: dict) -> bool:
+    """Recognize new markers plus exact-run legacy checkpoints.
+
+    Selection traces were persisted before the explicit completion marker was
+    introduced and are sufficient evidence that a response group was fully
+    processed.  ``source=llm*`` remains a compatibility path for older code
+    mode checkpoints.
+    """
+    if row.get(_LLM_ATTEMPT_STATUS_FIELD) == _LLM_ATTEMPT_COMPLETED:
+        return True
+    trace = row.get("selection_trace")
+    if (isinstance(trace, dict)
+            and trace.get("outcome") in _LEGACY_COMPLETED_SELECTION_OUTCOMES):
+        return True
+    return str(row.get("source", "")).startswith("llm")
+
+
+def _effective_table_k(route: dict, k: int) -> int:
+    """k>0 is a fixed cap; k=0 uses the route's dynamic evidence budget."""
+    if k < 0:
+        raise ValueError("k must be >= 0 (0 = route.evidence_budget)")
+    if k > 0:
+        return k
+    try:
+        budget = int(route.get("evidence_budget") or CODEGEN_K)
+    except (TypeError, ValueError):
+        budget = CODEGEN_K
+    return max(1, budget)
+
+
+class QuestionBundle:
+    def __init__(self, rec: dict, store: Store, k: int = CODEGEN_K,
+                 run_signature: str = "", rescue_no_candidates: bool = False,
+                 rescue_table_k: int = 20, rescue_min_score: float = 28.0):
+        self.id = rec["id"]
+        self.question = rec["question"]
+        self.route = rec["route"]
+        self.run_signature = run_signature
+        self.evidence_k = _effective_table_k(self.route, k)
+        self.rescue_no_candidates = bool(rescue_no_candidates)
+        self.rescue_table_k = max(self.evidence_k, int(rescue_table_k))
+        self.rescue_min_score = float(rescue_min_score)
+        self._store = store
+        self._all_cands = list(rec.get("candidates") or [])
+        self._candidate_rank = {
+            (str(c.get("report_id", "")), int(c.get("table_pos", -1))): i
+            for i, c in enumerate(self._all_cands, start=1)
+        }
+        self._loaded_table_keys: set[tuple[str, int]] = set()
+        self.cands: list[dict] = []
+        self.tables: list[dict] = []
+        self._shortlists = {}
+        self._atomic_facts: list[dict] | None = None
+        self._atomic_trace: dict = {}
+        self.dfs: dict = {}
+        self.shortlist_trace = {
+            "rescue_enabled": self.rescue_no_candidates,
+            "rescue_applied": False,
+            "strict_table_count": 0,
+            "rescue_table_count": 0,
+            "candidate_count": 0,
+            "rescue_mode": "none",
+        }
+        self._load_candidates(self._all_cands[:self.evidence_k])
+        self.shortlist_trace["strict_table_count"] = len(self.tables)
+
+    def _load_candidates(self, candidates: list[dict]) -> None:
+        """Append retrieval tables while preserving their original df rank."""
+        fresh = []
+        for c in candidates:
+            key = (str(c.get("report_id", "")), int(c.get("table_pos", -1)))
+            if key not in self._loaded_table_keys:
+                fresh.append(c)
+                self._loaded_table_keys.add(key)
+        if not fresh:
+            return
+        by_ticker: dict[str, list[dict]] = {}
+        for c in fresh:
+            by_ticker.setdefault(c["ticker"], []).append(c)
+        meta_lookup = {}
+        for ticker, cs in by_ticker.items():
+            tdf = self._store.tables_of(
+                ticker, list({c["report_id"] for c in cs}),
+            )
+            for m in tdf.to_dict("records"):
+                meta_lookup[(m["report_id"], int(m["table_pos"]))] = m
+        for c in fresh:
+            m = meta_lookup.get((c["report_id"], int(c["table_pos"])))
+            if m is None:
+                continue
+            csv_text = tidy_csv_text(m)
+            rank = self._candidate_rank[(c["report_id"], int(c["table_pos"]))]
+            var = f"df{rank}"
+            us = m.get("unit_scale")
+            us = None if (us is None or us != us) else float(us)
+            self.tables.append({
+                "var": var, "report_id": c["report_id"],
+                "ticker": c.get("ticker", ""),
+                "table_pos": int(c["table_pos"]), "page": c.get("page"),
+                "unit_scale": us, "unit_source": m.get("unit_source", "none"),
+                "report_year": int(m["year"]), "context": m.get("context", ""),
+                "csv_text": csv_text,
+            })
+            self.dfs[var] = df_roundtrip(csv_text)
+            self.cands.append(c)
+
+    def shortlist(self, encoder=None, top_n: int = 8):
+        """Row-level schema linking (P1.1): pre-match candidate cells so the
+        model chooses among ~8 rows instead of scanning every table."""
+        key = (id(encoder), int(top_n))
+        if key not in self._shortlists:
+            variants = self.route.get("metric_variants") or [self.route.get("metric_norm", "")]
+            plan = self.route.get("plan") or {}
+            strict = build_shortlist(
+                self.tables, variants, self.route.get("years") or [],
+                top_n=top_n, encoder=encoder,
+                facts=plan.get("facts") or None)
+            result = strict
+            if not strict and self.rescue_no_candidates:
+                self._load_candidates(self._all_cands[:self.rescue_table_k])
+                widened_strict = build_shortlist(
+                    self.tables, variants, self.route.get("years") or [],
+                    top_n=top_n, encoder=encoder,
+                    facts=plan.get("facts") or None,
+                )
+                result = widened_strict
+                rescue_mode = "widen_strict"
+                if not result:
+                    result = build_shortlist(
+                        self.tables, variants, self.route.get("years") or [],
+                        top_n=top_n, encoder=encoder,
+                        min_score=self.rescue_min_score,
+                        facts=plan.get("facts") or None,
+                        schema_rescue=True,
+                    )
+                    rescue_mode = "schema_2d" if result else "still_empty"
+                self.shortlist_trace.update({
+                    "rescue_applied": True,
+                    "rescue_table_count": len(self.tables),
+                    "candidate_count": len(result),
+                    "rescue_min_score": self.rescue_min_score,
+                    "widened_strict_candidate_count": len(widened_strict),
+                    "rescue_mode": rescue_mode,
+                })
+            else:
+                self.shortlist_trace["candidate_count"] = len(result)
+            self._shortlists[key] = result
+        return self._shortlists[key]
+
+    def atomic_slots(self) -> list[dict]:
+        if self._atomic_facts is None:
+            self._atomic_facts, self._atomic_trace = plan_atomic_slots(
+                self.question, self.route,
+            )
+        return self._atomic_facts
+
+    def shortlist_v2(self, encoder=None, top_n: int = 24):
+        """Role-aware shortlist used only by the opt-in v2 selector.
+
+        Unlike v1, rescue also runs for a partial atomic-slot allocation. Strict
+        candidates remain first; schema rescue only fills missing slots.
+        """
+        key = ("select_v2", id(encoder), int(top_n))
+        if key in self._shortlists:
+            return self._shortlists[key]
+        variants = self.route.get("metric_variants") or [self.route.get("metric_norm", "")]
+        facts = self.atomic_slots()
+
+        def grounded(candidates):
+            return [candidate for candidate in candidates
+                    if bool(getattr(candidate, "metric_grounded", False))]
+
+        def slots(candidates):
+            return {str(c.fact_slot) for c in candidates if getattr(c, "fact_slot", "")}
+
+        required = {f"F{i}" for i in range(1, len(facts) + 1)}
+        strict_raw = build_shortlist(
+            self.tables, variants, self.route.get("years") or [],
+            top_n=top_n, encoder=encoder, facts=facts or None,
+        )
+        strict = grounded(strict_raw)
+        result = strict
+        raw_result = strict_raw
+        rescue_mode = "none"
+        if self.rescue_no_candidates and not required <= slots(strict):
+            self._load_candidates(self._all_cands[:self.rescue_table_k])
+            widened_raw = build_shortlist(
+                self.tables, variants, self.route.get("years") or [],
+                top_n=top_n, encoder=encoder, facts=facts or None,
+            )
+            widened = grounded(widened_raw)
+            result = widened
+            raw_result = widened_raw
+            rescue_mode = "atomic_partial_widen"
+            if not required <= slots(widened):
+                schema_raw = build_shortlist(
+                    self.tables, variants, self.route.get("years") or [],
+                    top_n=top_n, encoder=encoder,
+                    min_score=self.rescue_min_score, facts=facts or None,
+                    schema_rescue=True,
+                )
+                schema = grounded(schema_raw)
+                raw_result = [*widened_raw, *schema_raw]
+                missing = required - slots(widened)
+                extras = [c for c in schema if c.fact_slot in missing]
+                seen = {(c.var, c.row, c.col) for c in widened}
+                merged = list(widened)
+                for candidate in extras:
+                    stable = (candidate.var, candidate.row, candidate.col)
+                    if stable not in seen and len(merged) < top_n:
+                        merged.append(candidate)
+                        seen.add(stable)
+                result = merged
+                rescue_mode = ("atomic_partial_schema" if required <= slots(result)
+                               else "atomic_semantic_incomplete")
+            self.shortlist_trace.update({
+                "rescue_applied": True,
+                "rescue_table_count": len(self.tables),
+                "rescue_min_score": self.rescue_min_score,
+                "rescue_mode": rescue_mode,
+            })
+        raw_present = slots(raw_result)
+        present = slots(result)
+        entity_guard = (self._atomic_trace.get("entity_guard") or {})
+        entity_ok = bool(entity_guard.get("ok", True))
+        atomic_truncated = bool(self._atomic_trace.get("truncated"))
+        grounding_rejections = Counter(
+            str(getattr(candidate, "metric_grounding_reason", "unknown") or "unknown")
+            for candidate in raw_result
+            if not bool(getattr(candidate, "metric_grounded", False))
+        )
+        self.shortlist_trace.update({
+            "candidate_count": len(result),
+            "raw_candidate_count": len(raw_result),
+            "metric_grounding_rejections": dict(sorted(grounding_rejections.items())),
+            "atomic_slots": dict(self._atomic_trace),
+            "atomic_fact_slots_required": len(required),
+            "atomic_fact_slots_present": len(required & raw_present),
+            "atomic_fact_complete": bool(required and required <= raw_present),
+            "semantic_fact_slots_present": len(required & present),
+            "semantic_fact_complete": bool(
+                required and entity_ok and not atomic_truncated
+                and required <= present
+            ),
+        })
+        self._shortlists[key] = result
+        return result
+
+    def select_messages(self, encoder=None) -> list[dict]:
+        """Selection mode: the model only picks shortlist rows + an operation."""
+        plan = self.route.get("plan") or {}
+        op = plan.get("op", "lookup")
+        facts = plan.get("facts", [])
+        plan_block = "HINT - parsed operation: " + op
+        if facts:
+            plan_block += "\nFACT SLOTS (candidate column 'fact' links to these):\n"
+            plan_block += "\n".join(
+                f"F{i}: ticker={f.get('ticker') or '?'}; year={f.get('year') or '?'}; "
+                f"role={f.get('role') or 'value'}; metric={f.get('metric') or '?'}"
+                for i, f in enumerate(facts[:24], 1)
+            )
+        return [{"role": "system", "content": SELECT_SYSTEM},
+                {"role": "user", "content": build_select_user(
+                    self.question, self.route,
+                    render_shortlist(self.shortlist(encoder, top_n=12)),
+                    plan_block)}]
+
+    def select_v2_messages(self, encoder=None) -> list[dict]:
+        """Typed nested IR mode with named, provenance-bearing atomic facts."""
+        return build_select_v2_messages(
+            self.question, self.route, self.shortlist_v2(encoder, top_n=24),
+            atomic_facts=self.atomic_slots(),
+        )
+
+    def prompt_messages(self, encoder=None) -> list[dict]:
+        from ..retrieval.serialize import preview_for_prompt
+        tables = [{**t, "preview": preview_for_prompt(t["csv_text"])} for t in self.tables]
+        plan = self.route.get("plan") or {}
+        op = plan.get("op", "lookup")
+        plan_block = ""
+        if op != "lookup" or len(plan.get("facts", [])) > 1:
+            plan_block = (describe_for_prompt(op, len(plan.get("facts", []))) + "\n"
+                          "FACTS TO LOCATE: " + ", ".join(
+                              f"{f.get('ticker')}/{f.get('year')}/{f.get('doc_type')}"
+                              for f in plan.get("facts", [])[:8]) + "\n")
+        return [{"role": "system", "content": SYSTEM},
+                {"role": "user", "content": build_user(
+                    self.question, self.route, tables,
+                    shortlist_block=render_shortlist(self.shortlist(encoder)),
+                    plan_block=plan_block)}]
+
+    def used_vars(self, code: str) -> list[dict]:
+        # Submission replay must receive every dataframe the program may access,
+        # including intermediates that do not flow into the final answer.  The
+        # separate semantic guard still requires the answer itself to be grounded.
+        try:
+            refs = sorted(all_dataframe_refs(code))
+        except SyntaxError:
+            refs = []
+        by_var = {t["var"]: t for t in self.tables}
+        used = [by_var[v] for v in refs if v in by_var]
+        return [{"var": t["var"], "report_id": t["report_id"],
+                 "table_pos": t["table_pos"]} for t in used]
+
+    def debug_messages(self, code: str, error: str) -> list[dict]:
+        """Retry with the original route and table previews still in context."""
+        messages = self.prompt_messages()
+        messages.extend([
+            {"role": "assistant", "content": f"```python\n{code}\n```"},
+            {"role": "user", "content": (
+                "The previous program failed execution or semantic validation.\n"
+                f"Error: {error}\n"
+                "Return a corrected Python code block grounded in the provided "
+                "DataFrames."
+            )},
+        ])
+        return messages
+
+
+def _vote(samples_results: list[tuple[str, dict]]):
+    """samples_results: [(code, exec_result)] -> (answer, code) by majority on
+    the rounded value; ties broken by first occurrence."""
+    ok = [(c, r) for c, r in samples_results if r["status"] == "ok"]
+    if not ok:
+        return None
+    counts = Counter(round(r["value"], 2) for _c, r in ok)
+    winner, n = counts.most_common(1)[0]
+    for c, r in ok:
+        if round(r["value"], 2) == winner:
+            return {"answer": float(winner), "code": c, "votes": int(n),
+                    "n_ok": len(ok), "semantic": r.get("semantic")}
+    return None
+
+
+def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
+                k: int = CODEGEN_K, n_samples: int = 4, temperature: float = 0.7,
+                debug_rounds: int = 1, limit: int = 0, use_rule_fallback: bool = True,
+                rule_first: bool = False, max_tokens: int = 768,
+                checkpoint_every: int = 32, resume: bool = True,
+                time_budget_s: float = 0.0, run_signature: str = "",
+                use_dense: bool = False, dense_model: str = "",
+                llm_target: str = "all", llm_mode: str = "code",
+                rescue_no_candidates: bool = False,
+                rescue_table_k: int = 20,
+                rescue_min_score: float = 28.0,
+                llm_ids: set[int] | None = None) -> None:
+    """Crash-safe codegen.
+
+    Order of operations (important on Kaggle where a session can die at any time):
+      1. build bundles
+      2. compute the deterministic RULE baseline for every question and FLUSH it
+         -> out_path is a complete, submittable file from minute ~2 onward
+      3. run the LLM in chunks of `checkpoint_every`, overwriting entries with
+         better answers, flushing after every chunk
+      4. stop cleanly when `time_budget_s` is exceeded (keeps what it has)
+
+    resume=True picks up an existing out_path and skips ids whose configured
+    LLM attempt completed.  Completion is independent of the final source: an
+    accepted Selection answer may still lose arbitration to a rule, and a
+    rejected attempt intentionally keeps the baseline.  A record is reused
+    only when its run_signature exactly matches this run.
+    """
+    t_start = time.time()
+    store = Store(store_dir, cache_size=4)
+    # optional BGE-M3 row matcher (P1.4). None -> lexical only, never fatal.
+    encoder = None
+    if use_dense:
+        from ..retrieval.dense import load_encoder, DEFAULT_MODEL
+        encoder = load_encoder(dense_model or DEFAULT_MODEL,
+                               cache_dir=Path(store_dir) / "label_index")
+    recs = read_jsonl(retrieval_path)
+    if limit:
+        recs = recs[:limit]
+
+    bundles, results = [], {}
+    print(f"building {len(recs)} bundles...", flush=True)
+    for rec in recs:
+        bundle_kwargs = {"run_signature": run_signature}
+        # Preserve the historical constructor call for test doubles and local
+        # callers unless the opt-in rescue experiment is explicitly enabled.
+        if rescue_no_candidates:
+            bundle_kwargs.update({
+                "rescue_no_candidates": True,
+                "rescue_table_k": rescue_table_k,
+                "rescue_min_score": rescue_min_score,
+            })
+        b = QuestionBundle(rec, store, k, **bundle_kwargs)
+        if not b.tables:
+            results[b.id] = _empty_result(b, "no candidate tables")
+            continue
+        bundles.append(b)
+
+    # ---------- resume: read the previous file BEFORE overwriting it ----------
+    prev = _load_previous(out_path) if resume else {}
+    already = {
+        qid for qid, r in prev.items()
+        if r.get("run_signature") == run_signature
+        and _has_completed_llm_attempt(r)
+    }
+    if already:
+        print(f"resume: {len(already)} LLM attempts already completed", flush=True)
+    elif prev:
+        same_signature = sum(
+            r.get("run_signature") == run_signature for r in prev.values()
+        )
+        if same_signature:
+            print("resume: matching output exists but has no completed LLM "
+                  "attempts; pending attempts will run", flush=True)
+        else:
+            print("resume: previous output exists but has a different/missing "
+                  "run signature; its LLM attempts will not be reused", flush=True)
+
+    # ---------- step 2: rule baseline for everything, flush immediately ----------
+    print(f"rule baseline over {len(bundles)} questions...", flush=True)
+    rule_conf, rule_answers = {}, {}
+    for b in bundles:
+        if b.id in already:                     # keep the better LLM answer
+            # Upgrade legacy exact-signature checkpoints (selection_trace or
+            # source=llm*) to the explicit marker as they are rewritten.
+            results[b.id] = _mark_llm_attempt_completed(dict(prev[b.id]))
+            rule_conf[b.id] = 0.0
+            continue
+        r = _rule_result(b, encoder) if use_rule_fallback else None
+        results[b.id] = r if r is not None else _empty_result(b, "rule found nothing")
+        rule_conf[b.id] = r["detail_conf"] if r else 0.0
+        if r is not None:
+            rule_answers[b.id] = {"answer": r["answer"],
+                                  "pandas_query": r["pandas_query"],
+                                  "confidence": r["detail_conf"],
+                                  "source": r["source"]}
+    _flush(out_path, recs, results)
+    print(f"  baseline written ({_srcs(recs, results)}) -> {out_path}", flush=True)
+
+    if client.name == "none":
+        print(f"codegen done (rule only): {_srcs(recs, results)} -> {out_path}")
+        return
+
+    # GPU budget targeting. A Kaggle session fits ~1000 questions; spending it
+    # on questions the rule already answers confidently is waste, because
+    # arbitration keeps the rule answer anyway when the two disagree.
+    #   all   - every question (default, most thorough)
+    #   empty - ONLY questions with no deterministic answer  (best value/hour)
+    #   weak  - empty + rule answers flagged AMBIGUOUS / low confidence
+    def _wanted(b) -> bool:
+        if llm_ids is not None and b.id not in llm_ids:
+            return False
+        if rule_first and rule_conf.get(b.id, 0) >= 90:
+            return False
+        if llm_target == "empty":
+            return b.id not in rule_answers
+        if llm_target == "weak":
+            return b.id not in rule_answers or rule_conf.get(b.id, 0) < 78
+        return True
+
+    llm_todo = [b for b in bundles if b.id not in already and _wanted(b)]
+    skipped = len(bundles) - len(llm_todo) - len(already)
+    print(f"LLM queue: {len(llm_todo)} questions "
+          f"(mode={llm_mode}, target={llm_target}, skipped {skipped}, "
+          f"n={n_samples}, T={temperature})", flush=True)
+
+    # ---------- step 3: chunked generation with checkpoints ----------
+    chunk = max(1, checkpoint_every)
+    n_chunks = (len(llm_todo) + chunk - 1) // chunk
+    for ci in range(n_chunks):
+        elapsed_before = time.time() - t_start
+        if time_budget_s and elapsed_before >= time_budget_s:
+            print(f"time budget {time_budget_s/60:.0f}min reached before chunk "
+                  f"{ci+1}; keeping the complete checkpoint", flush=True)
+            break
+        part = llm_todo[ci * chunk:(ci + 1) * chunk]
+        t0 = time.time()
+        # keep the no-arg call path: test doubles implement prompt_messages()
+        if llm_mode == "select_v2":
+            convs = [b.select_v2_messages(encoder) for b in part]
+        elif llm_mode == "select":
+            convs = [b.select_messages(encoder) for b in part]
+        else:
+            convs = [(b.prompt_messages(encoder) if encoder is not None
+                      else b.prompt_messages()) for b in part]
+        try:
+            gens = client.chat_batch(convs, n=n_samples, temperature=temperature,
+                                     max_tokens=max_tokens)
+        except Exception:
+            # The rule baseline and all earlier chunks are already durable. Make
+            # that guarantee explicit before propagating OOM/backend failures.
+            _flush(out_path, recs, results)
+            print(f"[chunk {ci+1}/{n_chunks}] generation failed; checkpoint kept "
+                  f"at {out_path}", flush=True)
+            raise
+        if len(gens) != len(part):
+            _flush(out_path, recs, results)
+            raise RuntimeError(
+                f"LLM returned {len(gens)} result groups for {len(part)} prompts"
+            )
+        debug_queue = []
+        if llm_mode in {"select", "select_v2"}:
+            trace_outcomes, trace_rejections = Counter(), Counter()
+            for b, samples in zip(part, gens):
+                if llm_mode == "select_v2":
+                    cands = b.shortlist_v2(encoder, top_n=24)
+                    decision, trace = evaluate_v2_samples(
+                        samples, cands, b.route, b.question,
+                        lambda query, bundle=b: _run_validated(bundle, query),
+                        atomic_facts=b.atomic_slots(),
+                    )
+                    rec = None
+                    if decision is not None:
+                        rec = _final(
+                            b, decision.answer, decision.query, "llm_select_v2",
+                        )
+                        rec["detail"] = (
+                            f"v2 root={decision.compiled.root_op} "
+                            f"refs={list(decision.compiled.referenced_indices)}"
+                        )
+                        rec["detail_conf"] = decision.confidence
+                else:
+                    rec, trace = _selection_result(
+                        b, samples, encoder, return_trace=True,
+                    )
+                trace["shortlist"] = dict(b.shortlist_trace)
+                trace_outcomes[trace.get("outcome", "unknown")] += 1
+                trace_rejections.update(trace.get("rejection_counts") or {})
+                if rec is not None:
+                    out = _arbitrated(b, rule_answers.get(b.id), rec, 1, 1)
+                else:
+                    # Selection failures keep exactly the same deterministic
+                    # answer as before; only attach audit metadata explaining
+                    # why none of the model samples was usable.
+                    out = results[b.id]
+                out["selection_trace"] = trace
+                results[b.id] = _mark_llm_attempt_completed(out)
+            _flush(out_path, recs, results)
+            dt, elapsed = time.time() - t0, time.time() - t_start
+            print(f"[chunk {ci+1}/{n_chunks}] {len(part)}q in {dt/60:.1f}min | "
+                  f"elapsed {elapsed/60:.1f}min | {_srcs(recs, results)}", flush=True)
+            print(f"  selection trace: outcomes={dict(trace_outcomes)} "
+                  f"rejections={dict(trace_rejections)}", flush=True)
+            if time_budget_s and elapsed + dt > time_budget_s:
+                print("time budget reached -> stopping cleanly", flush=True)
+                break
+            continue
+
+        for b, samples in zip(part, gens):
+            sr = [(extract_code(s), None) for s in samples]
+            sr = [(c, _run_validated(b, c)) for c, _ in sr]
+            win = _vote(sr)
+            if win:
+                llm_rec = _final(b, win["answer"], win["code"], "llm",
+                                 votes=win["votes"], n_ok=win["n_ok"],
+                                 semantic=win.get("semantic"))
+                out = _arbitrated(b, rule_answers.get(b.id), llm_rec,
+                                  win.get("votes", 1), n_samples)
+                results[b.id] = _mark_llm_attempt_completed(out)
+            else:
+                err = next((r["error"] for _c, r in sr if r["error"]), "no output")
+                debug_queue.append((b, sr[0][0] if sr else "", err))
+
+        # Preserve all successful round-1 answers before the optional debug
+        # pass. A debug OOM must not discard useful work from this chunk.
+        _flush(out_path, recs, results)
+
+        for rnd in range(debug_rounds):
+            if not debug_queue:
+                break
+            convs = [b.debug_messages(code, err) for b, code, err in debug_queue]
+            try:
+                gens = client.chat_batch(convs, n=1, temperature=0.2,
+                                         max_tokens=max_tokens)
+            except Exception:
+                _flush(out_path, recs, results)
+                print(f"[chunk {ci+1}/{n_chunks}] debug round {rnd+1} failed; "
+                      "round-1 checkpoint kept", flush=True)
+                raise
+            if len(gens) != len(debug_queue):
+                _flush(out_path, recs, results)
+                raise RuntimeError(
+                    f"LLM returned {len(gens)} debug groups for "
+                    f"{len(debug_queue)} prompts"
+                )
+            nxt = []
+            for (b, old_code, _err), samples in zip(debug_queue, gens):
+                code = extract_code(samples[0]) if samples else ""
+                r = _run_validated(b, code)
+                if r["status"] == "ok":
+                    llm_rec = _final(
+                        b, round(r["value"], 2), code, "llm_debug",
+                        semantic=r.get("semantic"),
+                    )
+                    out = _arbitrated(b, rule_answers.get(b.id), llm_rec, 1, 1)
+                    results[b.id] = _mark_llm_attempt_completed(out)
+                else:
+                    nxt.append((b, code or old_code, r["error"] or "no output"))
+            debug_queue = nxt
+        # Questions the LLM could not fix keep their rule-baseline entry, but
+        # their configured attempt is complete after all debug rounds.  If a
+        # debug backend call raises, control never reaches this marker and they
+        # remain correctly pending for resume.
+        for b, _code, _err in debug_queue:
+            _mark_llm_attempt_completed(results[b.id])
+
+        _flush(out_path, recs, results)
+        dt, elapsed = time.time() - t0, time.time() - t_start
+        eta = dt * (n_chunks - ci - 1)
+        print(f"[chunk {ci+1}/{n_chunks}] {len(part)}q in {dt/60:.1f}min | "
+              f"elapsed {elapsed/60:.1f}min | ETA {eta/60:.1f}min | "
+              f"{_srcs(recs, results)}", flush=True)
+
+        if time_budget_s and elapsed + dt > time_budget_s:
+            print(f"time budget {time_budget_s/60:.0f}min reached -> stopping cleanly "
+                  f"(file is complete & submittable; rerun with --resume to continue)",
+                  flush=True)
+            break
+
+    _flush(out_path, recs, results)
+    print(f"codegen done: {_srcs(recs, results)} -> {out_path}")
+
+
+def _flush(out_path: Path, recs: list[dict], results: dict) -> None:
+    """Write every question in input order; atomic-ish via temp file + replace."""
+    ordered = [results[rec["id"]] for rec in recs if rec["id"] in results]
+    tmp = Path(str(out_path) + ".tmp")
+    write_jsonl(tmp, ordered)
+    os.replace(tmp, out_path)
+
+
+def _load_previous(out_path: Path) -> dict:
+    if not Path(out_path).exists():
+        return {}
+    try:
+        return {r["id"]: r for r in read_jsonl(out_path)}
+    except Exception:  # noqa: BLE001 - corrupt/partial file must not kill the run
+        return {}
+
+
+def _srcs(recs: list[dict], results: dict) -> dict:
+    return dict(Counter(results[r["id"]]["source"] for r in recs if r["id"] in results))
+
+
+def _run_validated(b: QuestionBundle, code: str) -> dict:
+    result = run_code(code, b.dfs)
+    if result["status"] != "ok":
+        return result
+    check = validate_generated_answer(
+        code, b.dfs.keys(), result["value"], route=getattr(b, "route", {}),
+    )
+    result["semantic"] = check.to_dict()
+    if not check.ok:
+        result["status"] = "semantic_error"
+        result["error"] = "; ".join(check.errors)
+    return result
+
+
+def _bounded_trace_text(value, limit: int) -> tuple[str, int, bool, str]:
+    """Return a JSON-safe, bounded preview plus provenance for audit logs.
+
+    Model output is normally a tiny JSON object, but backend failures can leak
+    very large strings or control characters into a checkpoint.  The digest
+    lets us compare full responses without making the JSONL unbounded.
+    """
+    raw = "" if value is None else str(value)
+    encoded = raw.encode("utf-8", errors="replace")
+    clean = encoded.decode("utf-8", errors="replace")
+    clean = "".join(
+        ch if ch in "\n\r\t" or ord(ch) >= 32 else "\ufffd" for ch in clean
+    )
+    return (clean[:limit], len(clean), len(clean) > limit,
+            hashlib.sha256(encoded).hexdigest())
+
+
+def _trace_reason(value) -> str:
+    return _bounded_trace_text(value, _SELECTION_REASON_MAX_CHARS)[0]
+
+
+def _attempt_record(index: int, text) -> dict:
+    preview, n_chars, truncated, digest = _bounded_trace_text(
+        text, _SELECTION_RAW_MAX_CHARS,
+    )
+    return {
+        "index": int(index),
+        "raw_response": preview,
+        "raw_chars": int(n_chars),
+        "raw_truncated": bool(truncated),
+        "raw_sha256": digest,
+        "stage": "parse",
+        "accepted": False,
+        "reason_code": "",
+        "reason": "",
+    }
+
+
+def _finish_selection_trace(candidate_count: int, samples: list,
+                            attempts: list[dict], outcome: str,
+                            accepted_attempt: int | None = None) -> dict:
+    rejected = Counter(
+        a.get("reason_code") for a in attempts
+        if (a.get("reason_code") and not a.get("accepted")
+            and a.get("stage") != "not_evaluated")
+    )
+    evaluated = sum(a.get("stage") != "not_evaluated" for a in attempts)
+    return {
+        "schema_version": _SELECTION_TRACE_SCHEMA,
+        "outcome": outcome,
+        "candidate_count": int(candidate_count),
+        "samples_received": len(samples),
+        "attempts_evaluated": int(evaluated),
+        "accepted_attempt": accepted_attempt,
+        "rejection_counts": dict(rejected),
+        "attempts": attempts,
+    }
+
+
+def _selection_result(b: QuestionBundle, samples, encoder,
+                      return_trace: bool = False):
+    """Turn the model's JSON pick into a verified answer + generated query.
+
+    The model never writes pandas here, so the three failure classes audited in
+    submission #12 (missing column filter, missing unit conversion, regex
+    patterns) cannot occur: selection.synthesize emits the expression.
+
+    ``return_trace`` is intentionally optional so existing callers keep the
+    historical ``dict | None`` API.  The runner requests the trace and stores it
+    as metadata even when the deterministic rule answer remains final.
+    """
+    cands = b.shortlist(encoder, top_n=12)
+    samples = list(samples or [])
+    if not cands:
+        attempts = []
+        for index, text in enumerate(samples, start=1):
+            attempt = _attempt_record(index, text)
+            attempt.update({
+                "stage": "not_evaluated",
+                "reason_code": "no_candidates",
+                "reason": "selection shortlist is empty",
+            })
+            attempts.append(attempt)
+        trace = _finish_selection_trace(0, samples, attempts, "no_candidates")
+        return (None, trace) if return_trace else None
+
+    attempts: list[dict] = []
+    accepted = None
+    accepted_index = None
+    for index, text in enumerate(samples, start=1):
+        attempt = _attempt_record(index, text)
+        sel = parse_selection(text)
+        if sel is None:
+            explicit_none = bool(re.search(
+                r'["\']op["\']\s*:\s*["\']none["\']', str(text), re.I,
+            ))
+            attempt.update({
+                "stage": "parse",
+                "reason_code": "model_none" if explicit_none else "parse_error",
+                "reason": ("model explicitly selected no candidate"
+                           if explicit_none else
+                           "response does not contain a parseable selection JSON"),
+            })
+            attempts.append(attempt)
+            continue
+        attempt["selection"] = {
+            "op": sel.op,
+            "operands": list(sel.operands),
+            "note": _trace_reason(sel.note),
+        }
+        if sel.op == "none":
+            attempt.update({
+                "stage": "selection",
+                "reason_code": "model_none",
+                "reason": "model explicitly selected no candidate",
+            })
+            attempts.append(attempt)
+            continue
+        validation_error = sel.valid_for(len(cands))
+        if validation_error:
+            attempt.update({
+                "stage": "selection",
+                "reason_code": "invalid_selection",
+                "reason": _trace_reason(validation_error),
+            })
+            attempts.append(attempt)
+            continue
+        answer, query, err = synthesize(sel, cands, b.route)
+        if err or answer is None:
+            attempt.update({
+                "stage": "synthesis",
+                "reason_code": "synthesis_error",
+                "reason": _trace_reason(err or "synthesizer returned no answer"),
+            })
+            attempts.append(attempt)
+            continue
+        ex = _run_validated(b, query)          # the query must reproduce it
+        attempt["execution"] = {
+            "status": str(ex.get("status", "")),
+            "value": ex.get("value"),
+            "error": _trace_reason(ex.get("error") or ""),
+        }
+        if ex["status"] != "ok":
+            if ex["status"] == "semantic_error":
+                attempt.update({
+                    "stage": "semantic",
+                    "reason_code": "semantic_validation_failed",
+                    "reason": _trace_reason(ex.get("error") or
+                                            "semantic validation failed"),
+                    "semantic": ex.get("semantic") or {},
+                })
+            else:
+                attempt.update({
+                    "stage": "execution",
+                    "reason_code": "execution_failed",
+                    "reason": _trace_reason(ex.get("error") or
+                                            ex.get("status") or
+                                            "query execution failed"),
+                })
+            attempts.append(attempt)
+            continue
+        if abs(ex["value"] - answer) > 0.011:
+            attempt.update({
+                "stage": "replay",
+                "reason_code": "answer_mismatch",
+                "reason": (f"synthesized answer {answer!r} != replay value "
+                           f"{ex['value']!r}"),
+            })
+            attempts.append(attempt)
+            continue
+        out = _final(b, round(ex["value"], 2), query, "llm_select",
+                     semantic=ex.get("semantic"))
+        out["detail"] = f"op={sel.op} operands={sel.operands}"
+        out["detail_conf"] = sel_conf(sel, cands, answer, b.route)
+        attempt.update({
+            "stage": "accepted",
+            "accepted": True,
+            "reason_code": "",
+            "reason": "",
+            "answer": float(out["answer"]),
+        })
+        attempts.append(attempt)
+        accepted, accepted_index = out, index
+        break
+
+    # Preserve raw model responses for every requested sample while retaining
+    # the historical first-valid-sample decision.  Later samples are never
+    # parsed, synthesized or executed after a successful attempt.
+    if accepted is not None and accepted_index is not None:
+        for index, text in enumerate(samples[accepted_index:],
+                                     start=accepted_index + 1):
+            attempt = _attempt_record(index, text)
+            attempt.update({
+                "stage": "not_evaluated",
+                "reason_code": "not_evaluated_after_acceptance",
+                "reason": f"attempt {accepted_index} was already accepted",
+            })
+            attempts.append(attempt)
+        outcome = "accepted"
+    elif not samples:
+        outcome = "no_samples"
+    else:
+        outcome = "rejected"
+    trace = _finish_selection_trace(
+        len(cands), samples, attempts, outcome, accepted_index,
+    )
+    if accepted is not None:
+        accepted["selection_trace"] = trace
+    return (accepted, trace) if return_trace else accepted
+
+
+def _arbitrated(b: QuestionBundle, rule: dict | None, llm_rec: dict,
+                votes: int, n_samples: int) -> dict:
+    """Merge the deterministic answer with the LLM's, recording the decision.
+
+    Self-consistency is folded into the LLM's confidence: an answer that won
+    2/2 votes is trusted more than one that won 1/4.
+    """
+    llm_conf = 50.0 + 40.0 * (votes / max(1, n_samples))
+    verdict = arbitrate(rule, {"answer": llm_rec["answer"],
+                               "pandas_query": llm_rec["pandas_query"],
+                               "confidence": llm_conf,
+                               "source": llm_rec["source"]})
+    if verdict is None or verdict.used == "llm":
+        out = llm_rec
+    else:
+        out = _final(b, verdict.answer, verdict.pandas_query, verdict.source)
+        out["detail_conf"] = verdict.confidence
+    out["arbitration"] = {"reason": verdict.reason if verdict else "no verdict",
+                          "used": verdict.used if verdict else "llm",
+                          "rule_answer": (rule or {}).get("answer"),
+                          "llm_answer": llm_rec["answer"],
+                          "rule_conf": (rule or {}).get("confidence", 0.0),
+                          "llm_conf": round(llm_conf, 1)}
+    return out
+
+
+def _rule_result(b: QuestionBundle, encoder=None) -> dict | None:
+    """Deterministic answer: composite solver first (growth/difference/ratio/
+    ranking), then the single-fact lookup rule."""
+    ca = try_composite_answer(b.route, b.tables, encoder=encoder)
+    if ca.ok:
+        ex = _run_validated(b, ca.pandas_query)
+        if ex["status"] == "ok":
+            out = _final(b, round(ex["value"], 2), ca.pandas_query,
+                         "rule_composite", semantic=ex.get("semantic"))
+            out["detail"] = ca.detail
+            out["detail_conf"] = ca.confidence
+            return out
+
+    ra = try_rule_answer(b.route, b.tables)
+    if not ra.ok:
+        return None
+    ex = _run_validated(b, ra.pandas_query)
+    if ex["status"] != "ok":
+        return None
+    ans = round(ex["value"], 2)  # answer == what the query reproduces
+    out = _final(b, ans, ra.pandas_query, "rule", semantic=ex.get("semantic"))
+    out["detail"] = ra.detail
+    out["detail_conf"] = ra.confidence
+    return out
+
+
+def _final(b: QuestionBundle, answer: float, code: str, source: str,
+           votes: int = 1, n_ok: int = 1, semantic: dict | None = None) -> dict:
+    # The grader EVALUATES pandas_query as an expression: a multi-line script is
+    # a SyntaxError == crash (leaderboard-confirmed, submission #6). Inline the
+    # straight-line script into one expression right where it is produced, so
+    # every downstream consumer (checkpoints, resume, submission) is already
+    # in the graded form. used_vars is derived from the ORIGINAL code so that
+    # evidence still covers every DataFrame the model touched.
+    used = b.used_vars(code)
+    query, inline_err = try_to_expression(code)
+    return {"id": b.id, "question": b.question, "answer": float(answer),
+            "pandas_query": query, "used_vars": used,
+            "inline_error": inline_err or "",
+            "status": "ok", "source": source, "votes": votes, "n_ok": n_ok,
+            "detail": "", "detail_conf": 0.0,
+            "semantic": semantic or {},
+            "run_signature": getattr(b, "run_signature", "")}
+
+
+def _empty_result(b, reason: str) -> dict:
+    return {"id": b.id, "question": b.question, "answer": 0.0,
+            "pandas_query": "0.0",
+            "used_vars": ([{"var": t["var"], "report_id": t["report_id"],
+                            "table_pos": t["table_pos"]} for t in b.tables[:1]]
+                          if getattr(b, "tables", None) else []),
+            "status": "failed", "source": "none", "votes": 0, "n_ok": 0,
+            "detail": reason, "detail_conf": 0.0,
+            "semantic": {},
+            "run_signature": getattr(b, "run_signature", "")}

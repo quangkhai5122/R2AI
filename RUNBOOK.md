@@ -3,10 +3,11 @@
 > **File này là nguồn sự thật duy nhất về LỆNH CHẠY.** Mỗi khi pipeline đổi,
 > ghi đè trực tiếp vào đây (đừng tạo file mới) để không bị lạc phiên bản.
 >
-> Cập nhật lần cuối: **2026-08-10 (leaderboard #18/#19 + quyết định P2.2)** — khóa
-> fuzzy scorer, replay an toàn Selection #17, thêm rescue chỉ khi shortlist rỗng và
-> dựng dev set tune/locked có hash guard. **Structured Selection v2 typed nested IR đã
-> GO theo §7quater nhưng chưa được triển khai.**
+> Cập nhật lần cuối: **2026-08-15 (semantic-grounded v5.1 đã build local)** — raw
+> checkpoint Kaggle B=2/C=4 đã hoàn tất. Compiler v5.1 sửa xung đột sticky-unit/bare-VND;
+> CPU replay chấp nhận đủ 6/6 và sửa ID 966 từ 3 thành 2. Final candidate là
+> `artifacts/submission_p22bc_semantic_v51/submission.zip`; chưa có leaderboard score.
+> Không chạy lại Kaggle cho v5.1.
 
 ---
 
@@ -15,13 +16,14 @@
 | Thành phần | Phiên bản/giá trị đang dùng |
 |---|---|
 | `vifinqa` package | 0.2.0 |
-| Payload schema | **4** (manifest SHA-256 + fuzzy scorer contract) |
+| Payload schema | **8** là provenance raw semantic-v5; staged payload hiện stale sau source v5.1 và chỉ rebuild nếu có GPU run mới |
 | `TABLE_POS_MODE` | `line` (BTC xác nhận: vị trí = **số dòng** của `<table>`) |
 | `SUBMISSION_K` | 5 |
 | Retrieval control chuẩn | `artifacts/retrieval.jsonl`, SHA-256 `96b71c5b…` |
 | Candidate CPU tốt nhất | `artifacts/codegen_p21r_all_v3.jsonl` → `submission_p21r_all_v3` |
 | Điểm tốt nhất đã nộp | #19 all-types v3: TABLES_F2 .4439 / DOCS_F2 .8969 / ANSWER .2292 / EXEC .2292 |
-| Thứ tự tiếp theo | freeze #19 → rescue-v1 control → Structured Selection v2 fill-only → hybrid |
+| Candidate chưa nộp | P2.2 B+C semantic v5.1: 6 fill-only, ZIP SHA-256 `58dd6948f1537ffe...` |
+| Thứ tự tiếp theo | nộp/đo v5.1 một lần → báo score → làm ablation deterministic unit/column cho ID 71/271; không chạy thêm Qwen |
 | Backend LLM Kaggle | `hf` (transformers). **vLLM không chạy trên T4** |
 | Fuzzy scorer | `difflib.SequenceMatcher`, contract version `1` |
 
@@ -29,9 +31,9 @@
 
 ```powershell
 cd D:\Python_Project\Hackathon\R2AI_2026
-.venv\Scripts\activate
+# Dùng môi trường (base); không activate .venv.
 python -c "import json;d=[json.loads(l) for l in open('artifacts/retrieval.jsonl',encoding='utf-8')];print('retrieval:',len(d),'| co plan P1:', 'plan' in d[0]['route'])"
-python -m pytest tests -q
+python -m pytest -p no:cacheprovider --basetemp artifacts\pytest_tmp_runbook tests -q
 ```
 
 `co plan P1: False` ⇒ retrieval là bản CŨ, phải chạy lại §2 trước khi làm gì khác.
@@ -61,22 +63,25 @@ Payload luôn phải dựng lại khi **bất kỳ** file nào trong `vifinqa/` 
 - `artifacts/retrieval_rescue.jsonl` được dựng bằng router/retrieval hiện tại nhưng thay đổi
   cả route và thứ hạng table; đây là **ablation riêng**, không gọi là rescue-only.
 - Mọi output mới dùng tên mới và run signature mới. Không resume trực tiếp artifact #17.
-- Payload schema 4 local đã dựng từ retrieval control; còn bước upload version mới trước
-  lần Kaggle §7ter.
+- Checkpoint Stage B dở được sinh từ payload schema 5. Source hiện hành là schema 6;
+  phải tạo `p22b_oom_tail.json`, rebuild/upload rồi chỉ chạy tail bằng output mới. Không
+  resume checkpoint schema 5 với code hiện tại.
 
 ```powershell
 python -m pytest tests -q
 python scripts/04_make_kaggle_payload.py `
   --retrieval artifacts/retrieval.jsonl `
+  --target-dir artifacts/p22_targets `
   --dataset-id <user>/vifinqa-payload
 kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip `
-  -m "P2.1r frozen-scorer no-candidate-rescue"
+  -m "P2.2 schema6 Stage-B OOM tail"
 ```
 
-Payload local 2026-08-10: schema 4, **249 files**, khoảng 101 MB; fuzzy scorer
-`difflib.SequenceMatcher/v1`; stable manifest digest bắt đầu `91920b45e4184f37`, raw
-manifest SHA-256 bắt đầu `e7dea8c4d212d751`. Retrieval source/payload cùng SHA-256
-`96b71c5b31a193dc…`; 47/47 source-code file khớp staged payload.
+Payload schema 5 ngày 2026-08-11 có **270 files** và stable manifest digest bắt đầu
+`f174502ed8fe595e`; đây là provenance của checkpoint B đang dở. Recovery payload schema
+6 chưa có hash cuối cho tới khi checkpoint được tải và tail mask được tạo. Khi chỉ thêm
+`p22b_oom_tail.json`, manifest phải có 271 files. Retrieval vẫn là
+`96b71c5b31a193dc…` và fuzzy scorer `difflib.SequenceMatcher/v1`.
 
 ## 1. Cài đặt (một lần)
 
@@ -451,10 +456,11 @@ type artifacts\kaggle_payload\dataset-metadata.json
 
 ### 5.1 Codegen (Qwen)
 
-Notebook: `kaggle/vifinqa-codegen.ipynb` → File → Import Notebook.
+Notebook v1 rescue control: `kaggle/vifinqa-codegen.ipynb`. Lượt hiện hành P2.2 dùng
+`kaggle/vifinqa-codegen-p22.ipynb` và chạy B rồi C theo §7quater.
 Settings: **GPU T4 x2**, **Internet On**, Add Input = dataset payload (chỉ MỘT bản).
 
-Log đúng phải có: `payload verified: schema=4` →
+Log mới đúng phải có: `payload verified: schema=6` →
 `fuzzy scorer: backend=difflib.SequenceMatcher version=1` → `run signature: ...` →
 `baseline written (...)` → `LLM queue: ...` → `[chunk 1/N] ...`
 
@@ -481,7 +487,7 @@ Biến thể:
 | Smoke bắt buộc | dùng notebook: output riêng `codegen_sel14b_rescue_smoke.jsonl`, `--llm-target all --limit 12 --no-resume` |
 | Bỏ qua câu rule đã chắc | `--rule-first` |
 | Chạy tiếp phiên trước | đặt checkpoint vào đúng `/kaggle/working/codegen_sel14b_rescue.jsonl`, giữ NGUYÊN mọi cờ |
-| OOM | runner tự hạ batch; nếu phải đổi tay batch/k/token, dùng output mới vì run signature sẽ đổi |
+| OOM | schema 6 tự hạ batch và tách `n=2` thành hai lượt `n=1`; Stage B dở phải dùng tail mask + output mới theo P2.2 runbook mục 9 |
 
 Tải `codegen_sel14b_rescue.jsonl` từ tab Output → về local rồi hybrid, không build/nộp
 fallback trực tiếp:
@@ -667,12 +673,13 @@ theo public leaderboard nhiều lần.
 ```powershell
 python scripts/04_make_kaggle_payload.py `
   --retrieval artifacts/retrieval.jsonl `
+  --target-dir artifacts/p22_targets `
   --dataset-id lequangkhai5122005/vifinqa-payload
 kaggle datasets version -p artifacts\kaggle_payload --dir-mode zip `
-  -m "P2.1r frozen-scorer rescue-empty"
+  -m "P2.2 schema6 typed IR masks B-C"
 ```
 
-Manifest phải là schema 4, fuzzy scorer `difflib.SequenceMatcher` version 1. Import
+Manifest phải là schema 6, fuzzy scorer `difflib.SequenceMatcher` version 1. Import
 `kaggle/vifinqa-codegen.ipynb`; smoke dùng `all` trên 12 câu để test đường LLM, còn full
 run dùng đúng:
 
@@ -710,11 +717,14 @@ QA bắt buộc: 1.012 ID duy nhất, finite answer, mọi expression compile/re
 chỉ thay structural-none, và retrieval hash trùng control. Lượt này là **Selection v1
 rescue control**; Structured Selection v2 được phát triển/đo riêng theo §7quater.
 
-## 7quater. Quyết định sau #18/#19 — GO Structured Selection v2 typed nested IR
+## 7quater. Lịch sử P2.2 grounded schema 7 — RETIRED
 
-Kết quả #18/#19 đã thỏa evidence gate để **bắt đầu triển khai P2.2**, dù P2.4 chưa được
-gán nhãn. P2.4 vẫn hữu ích để tune/so sánh theo loại câu, nhưng không còn là blocker cho
-việc xây compiler và chạy ablation bảo thủ. Không dùng locked set để lặp thiết kế.
+> Phần 7quater dưới đây chỉ là provenance schema 7. Không dùng các câu “hiện hành”
+> trong lịch sử này; quy trình hiện hành bắt đầu ở 7quinquies.
+Kết quả #18/#19 đã thỏa evidence gate. P2.2 hiện có atomic metric-slot planner, named
+fact/binding, typed nested IR và grounded compiler bắt đủ F-slot/ticker/year. Payload
+hiện hành là schema 7. Quy trình tail schema 6 đã retire; lệnh duy nhất được dùng nằm ở
+mục 10 của `RUNBOOK_P2_2_STRUCTURED_SELECTION_V2.md`.
 
 Lý do:
 
@@ -726,7 +736,7 @@ Lý do:
 - rescue tìm candidate cho 107/142 `no_candidates`, nhưng chỉ 48/142 phủ đủ mọi fact
   slot hiện tại; 59 câu còn thiếu slot và 35 câu vẫn rỗng.
 
-Phạm vi P2.2 tiếp theo:
+Phạm vi P2.2 đã triển khai:
 
 1. **Atomic metric-slot planner:** tách role `filter`, `rank`, `project`, `numerator`,
    `denominator`, `base`, `end` theo ticker/year trước khi shortlist. Hiện toàn bộ 1.037
@@ -744,15 +754,66 @@ Thiết kế ablation bắt buộc:
 - **A1 — v1 rescue control:** chạy cấu hình Selection v1 đã có, lưu trace theo đúng nhóm
   failure; không trộn score này với V2;
 - **B — V2 rejected non-year:** chỉ cho phép thay 55 structural-none có candidate và
-  output không phải year, giữ bitwise 792 output thành công;
-- **C — V2 + rescue fact-complete:** sau B mới mở trước 48 no-candidate đã được rescue và
-  phủ đủ fact slot; 59 partial-slot và 35 shortlist rỗng tiếp tục giữ placeholder.
+  được thay bằng B-groundable 15 atomic-complete, không truncated;
+- **C — grounded rescue:** sau audit B mới mở 31/48 câu rescue atomic-complete.
 
-Không chạy V2 trên toàn bộ 1.012 câu và không ghi đè rule/Selection đang thành công. Khi
-chưa có P2.4, nếu accepted IR ≤40 thì review toàn bộ; nếu lớn hơn thì review ít nhất 30
-mẫu phân tầng và mọi edge/failure. Chỉ dùng leaderboard cho một ablation đã freeze, không
-lặp threshold theo public score. Lệnh chạy sẽ chỉ được thêm sau
-khi implementation/tests hoàn tất; hiện §7quater là quyết định thiết kế, không phải command.
+Không chạy V2 trên toàn bộ 1.012 câu và không ghi đè rule/Selection đang thành công.
+Checkpoint schema 5 đã được CPU replay: 48 attempted, chỉ ID 855 còn accepted; 9/9
+accepted sai đã biết đều bị reject. Không chạy tail 7 câu. Lượt tiếp theo là schema 7,
+B-groundable 15 câu trước.
+
+### Lệnh triển khai P2.2
+
+Dùng nguyên block ở **mục 10** của `RUNBOOK_P2_2_STRUCTURED_SELECTION_V2.md`.
+Notebook hiện hành phải in schema 7 và `LLM queue: 15`. Run All tự dừng trước C bằng
+`APPROVE_STAGE_C=False`. Sau khi tải B, bắt buộc chạy
+`48_audit → 50_replay → 48_audit → hybrid → build` rồi gửi artifact về review.
+
+Toàn bộ command Local/Kaggle, resume/OOM contract, hash đầy đủ, audit C và build BC nằm
+trong `RUNBOOK_P2_2_STRUCTURED_SELECTION_V2.md`. Nhật ký thay đổi ở
+`P2_2_STRUCTURED_SELECTION_V2_IMPLEMENTATION.md`. Chỉ dùng leaderboard cho ablation đã
+freeze; không lặp threshold/prompt theo public score.
+
+## 7quinquies. P2.2 semantic-grounded v5 — CURRENT
+
+Schema 8 thay thế schema 7. Planner mở slot `(entity, period, metric, role)` và chỉ
+đưa candidate vào prompt khi label/code/column/date chứng minh trực tiếp slot đó. Route
+phải qua cả entity guard lẫn planner guard; candidate chỉ khớp nhờ context, sai năm,
+sai VAS code, sai entity hoặc sai metric sẽ bị loại fail-closed.
+
+Các thay đổi vận hành:
+
+- prompt JSON rút gọn, fact chỉ dùng tên `F1..Fn`, giảm lặp envelope;
+- trace ghi `finish_reason`, token count và `hit_max_tokens`; response chạm giới hạn
+  được phân loại `generation_truncated`, không bị nhầm với parse error;
+- compiler hỗ trợ typed money literal (`nghìn/tỷ/triệu đồng`) nhưng không cho number
+  literal giả làm money;
+- replay mặc định yêu cầu checkpoint và mask trùng exact; tùy chọn
+  `--allow-checkpoint-superset` chỉ dùng cho audit checkpoint cũ, tuyệt đối không tái
+  sử dụng response ngoài mask;
+- mask hiện hành: B `p22b_semantic_groundable_v5.json` có IDs `[855,966]`; C
+  `p22c_semantic_groundable_v5.json` có IDs `[102,183,355,591]`.
+
+Gate đã đo ngày 2026-08-14:
+
+- focused P2.2: **80 passed**; full suite: **276 passed**; compileall pass;
+- payload schema 8: 288 manifest files, source/runtime **62/62 exact**;
+- stable manifest SHA-256
+  `b61cf8206c5802863ba36d0c7e41976d81ce2e97c083de49f5150d27b221dc67`;
+- raw manifest SHA-256
+  `0b31d13d6e120c0819a70cf678e52c68b3ed2948587ce8d7c9fece6cdfd56f50`;
+- B mask SHA-256
+  `a12ea224b2a38f19f768e0d81be27f73f2a9281c26b72b1fe2c378ad2f12bf60`;
+- C mask SHA-256
+  `32d8e21de24b8613cec04ec9903b0dd5248dd77f8e2db939e36ba94e89abda5d`.
+
+Checkpoint schema-7 `codegen_p22b_groundable_sel14b.jsonl` được replay dưới guard mới
+chỉ trên giao của mask: target 2, attempted 2, **accepted 0**, rejected 2; 13 response
+ngoài mask bị bỏ. Artifact này là đối chứng, không được hybrid/nộp.
+
+Lệnh Local/Kaggle authoritative nằm ở **mục 11** của
+`RUNBOOK_P2_2_STRUCTURED_SELECTION_V2.md`. Notebook phải in `schema=8` và B
+`LLM queue: 2`; nếu in 15/31 hoặc schema 7 thì dừng ngay.
 
 ## 8. Hiệu chuẩn eval offline ↔ leaderboard (QUAN TRỌNG)
 

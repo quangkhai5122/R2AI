@@ -1,0 +1,156 @@
+"""Freeze the subset of a P2.2 target whose atomic shortlist is complete."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from vifinqa.utils.io import read_jsonl, setup_stdout
+
+
+SCHEMA_VERSION = "p22_groundable_mask_v2_semantic"
+
+
+def build_groundable_mask(
+    audit_path: Path,
+    source_mask_path: Path,
+    retrieval_path: Path,
+    *,
+    expected_count: int = 15,
+    expect_rescue: bool = False,
+) -> dict:
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    source = json.loads(source_mask_path.read_text(encoding="utf-8"))
+    retrieval_rows = read_jsonl(retrieval_path)
+    retrieval = {int(row["id"]): row for row in retrieval_rows}
+    if len(retrieval) != len(retrieval_rows):
+        raise ValueError("retrieval has duplicate IDs")
+
+    source_ids = [int(value) for value in source.get("ids") or []]
+    if not source_ids or len(source_ids) != len(set(source_ids)):
+        raise ValueError("source mask must contain unique non-empty ids")
+    if int(source.get("count", len(source_ids))) != len(source_ids):
+        raise ValueError("source mask count mismatch")
+    if not set(source_ids) <= set(retrieval):
+        raise ValueError("source mask contains IDs absent from retrieval")
+
+    policy = audit.get("policy") or {}
+    audit_schema = str(audit.get("schema_version") or "")
+    if not (
+        audit_schema in {"p22_shortlist_audit_v1",
+                         "p22_shortlist_audit_v2_semantic"}
+        and policy.get("mode") == "select_v2"
+        and int(policy.get("k", -1)) == 0
+        and int(policy.get("top_n", -1)) == 24
+        and bool(policy.get("rescue")) == bool(expect_rescue)
+    ):
+        raise ValueError("audit does not match the requested select_v2 shortlist policy")
+    if str((audit.get("inputs") or {}).get("retrieval", {}).get("sha256") or "") \
+            != _sha256(retrieval_path):
+        raise ValueError("audit retrieval hash mismatch")
+    if str((audit.get("inputs") or {}).get("mask", {}).get("sha256") or "") \
+            != _sha256(source_mask_path):
+        raise ValueError("audit source-mask hash mismatch")
+
+    audit_rows = list(audit.get("rows") or [])
+    audit_ids = [int(row["id"]) for row in audit_rows]
+    if audit_ids != source_ids:
+        raise ValueError("audit rows are not the exact ordered source mask")
+    semantic = audit_schema == "p22_shortlist_audit_v2_semantic"
+    complete_field = "semantic_fact_complete" if semantic else "atomic_fact_complete"
+    selected = sorted(
+        int(row["id"])
+        for row in audit_rows
+        if int(row.get("candidate_count") or 0) > 0
+        and bool(row.get(complete_field))
+        and not bool(row.get("atomic_truncated"))
+    )
+    if expected_count >= 0 and len(selected) != expected_count:
+        raise ValueError(
+            f"groundable count drift: got {len(selected)}, expected {expected_count}"
+        )
+    by_output = Counter(
+        str((retrieval[qid].get("route") or {}).get("output_type") or "number")
+        for qid in selected
+    )
+    by_operation = Counter(
+        str(((retrieval[qid].get("route") or {}).get("plan") or {}).get("op")
+            or "lookup")
+        for qid in selected
+    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "name": f"{source.get('name') or 'P2.2'}-semantic-groundable-v5",
+        "policy": (
+            f"source=P2.2 AND candidate_count>0 AND {complete_field} "
+            "AND NOT atomic_truncated under select_v2 k=0 top_n=24 "
+            f"rescue={bool(expect_rescue)}"
+        ),
+        "semantic_gate": semantic,
+        "count": len(selected),
+        "ids": selected,
+        "strata": {
+            "output_type": dict(sorted(by_output.items())),
+            "operation": dict(sorted(by_operation.items())),
+        },
+        "excluded": {
+            "count": len(source_ids) - len(selected),
+            "ids": sorted(set(source_ids) - set(selected)),
+        },
+        "inputs": {
+            "retrieval": {"path": str(retrieval_path),
+                          "sha256": _sha256(retrieval_path)},
+            "source_mask": {"path": str(source_mask_path),
+                            "sha256": _sha256(source_mask_path)},
+            "shortlist_audit": {"path": str(audit_path),
+                                "sha256": _sha256(audit_path)},
+        },
+    }
+
+
+def _write_idempotent(path: Path, obj: dict) -> None:
+    payload = (json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True)
+               + "\n").encode("utf-8")
+    if path.exists():
+        if path.read_bytes() != payload:
+            raise ValueError(f"refusing to overwrite different frozen mask: {path}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def main() -> None:
+    setup_stdout()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--audit", required=True)
+    parser.add_argument("--source-mask", required=True)
+    parser.add_argument("--retrieval", default="artifacts/retrieval.jsonl")
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--expect", type=int, default=15)
+    parser.add_argument("--expect-rescue", action="store_true")
+    args = parser.parse_args()
+    mask = build_groundable_mask(
+        Path(args.audit), Path(args.source_mask), Path(args.retrieval),
+        expected_count=args.expect, expect_rescue=args.expect_rescue,
+    )
+    _write_idempotent(Path(args.out), mask)
+    print(json.dumps({"count": mask["count"], "ids": mask["ids"],
+                      "excluded": mask["excluded"]["count"]}, indent=2))
+    print(f"OK -> {args.out}")
+
+
+if __name__ == "__main__":
+    main()

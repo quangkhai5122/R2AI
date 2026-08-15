@@ -23,7 +23,7 @@ import random
 import sys
 from pathlib import Path
 
-PAYLOAD_SCHEMA_VERSION = 4
+PAYLOAD_SCHEMA_VERSION = 8
 MANIFEST_NAME = "payload-manifest.json"
 FUZZY_SCORER = {
     "backend": "difflib.SequenceMatcher",
@@ -75,6 +75,9 @@ def verify_payload(payload: Path, runtime_code_dir: Path | None = None) -> tuple
         "code/vifinqa/codegen/prompts.py",
         "code/vifinqa/codegen/executor.py",
         "code/vifinqa/codegen/selection.py",
+        "code/vifinqa/codegen/atomic_slots.py",
+        "code/vifinqa/codegen/selection_v2.py",
+        "code/vifinqa/codegen/selection_v2_prompt.py",
         "code/vifinqa/retrieval/shortlist.py",
         "code/vifinqa/utils/viet_text.py",
     }
@@ -127,6 +130,8 @@ def run_signature(args, manifest_hash: str, fuzzy_scorer: dict[str, str]) -> str
         "rule_first": args.rule_first,
         "llm_target": args.llm_target,
         "llm_mode": args.llm_mode,
+        "llm_ids_sha256": getattr(args, "llm_ids_sha256", ""),
+        "llm_ids_count": int(getattr(args, "llm_ids_count", 0)),
         "rescue_no_candidates": args.rescue_no_candidates,
         "rescue_table_k": (args.rescue_table_k
                            if args.rescue_no_candidates else 0),
@@ -152,6 +157,53 @@ def run_signature(args, manifest_hash: str, fuzzy_scorer: dict[str, str]) -> str
     return hashlib.sha256(raw).hexdigest()
 
 
+def load_llm_ids(raw_path: str, payload: Path, manifest_files: dict | None = None,
+                 require_manifest: bool = True) -> tuple[set[int] | None, str, Path | None]:
+    """Load a frozen target mask and bind its bytes into the run signature."""
+    if not str(raw_path or "").strip():
+        return None, "", None
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = payload / path
+    path = path.resolve()
+    if not path.is_file():
+        raise SystemExit(f"LLM id mask does not exist: {path}")
+    digest = _sha256(path)
+    if require_manifest:
+        try:
+            rel = path.relative_to(payload.resolve()).as_posix()
+        except ValueError as exc:
+            raise SystemExit("verified runs require --llm-ids-file inside the payload") from exc
+        expected = (manifest_files or {}).get(rel)
+        if expected is None:
+            raise SystemExit(f"LLM id mask is not fingerprinted by payload manifest: {rel}")
+        if expected != digest:
+            raise SystemExit(f"LLM id mask hash mismatch: {rel}")
+    raw = path.read_text(encoding="utf-8")
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        obj = [line.strip() for line in raw.splitlines()
+               if line.strip() and not line.lstrip().startswith("#")]
+    values = obj.get("ids") if isinstance(obj, dict) else obj
+    if not isinstance(values, list) or not values:
+        raise SystemExit("LLM id mask must be a non-empty JSON list/object.ids or line list")
+    ids = set()
+    for value in values:
+        if isinstance(value, bool):
+            raise SystemExit(f"invalid boolean id in LLM mask: {value!r}")
+        try:
+            qid = int(value)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"invalid id in LLM mask: {value!r}") from exc
+        if str(value).strip() != str(qid) and not isinstance(value, int):
+            raise SystemExit(f"non-canonical id in LLM mask: {value!r}")
+        ids.add(qid)
+    if len(ids) != len(values):
+        raise SystemExit("LLM id mask contains duplicate ids")
+    return ids, digest, path
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--payload", required=True, help="/kaggle/input/<...>/vifinqa-payload")
@@ -172,11 +224,16 @@ def main():
     ap.add_argument("--use-dense", action="store_true",
                     help="BGE-M3 row matching (needs store/label_index + sentence-transformers)")
     ap.add_argument("--dense-model", default="BAAI/bge-m3")
-    ap.add_argument("--llm-mode", choices=["code", "select"], default="code",
-                    help="select = model picks shortlist rows, we write the pandas "
-                         "(removes the unit/column/regex error classes)")
+    ap.add_argument("--llm-mode", choices=["code", "select", "select_v2"], default="code",
+                    help=("select = flat v1 cell selection; select_v2 = named atomic "
+                          "facts plus typed nested IR"))
     ap.add_argument("--llm-target", choices=["all", "empty", "weak"], default="all",
                     help="which questions the LLM should spend GPU time on")
+    ap.add_argument(
+        "--llm-ids-file", default="",
+        help=("optional payload-relative JSON/text ID mask; its bytes/count are "
+              "fingerprinted in the run signature"),
+    )
     ap.add_argument("--rule-first", action="store_true",
                     help="skip the LLM for high-confidence rule matches (faster)")
     ap.add_argument(
@@ -225,6 +282,7 @@ def main():
     runtime_code_dir = Path(__file__).resolve().parent
     if args.skip_payload_verification:
         print("[WARN] payload verification explicitly disabled", flush=True)
+        manifest = {"files": {}}
         manifest_hash = "unverified"
         fuzzy_scorer = dict(FUZZY_SCORER)
     else:
@@ -234,6 +292,15 @@ def main():
               f"files={len(manifest['files'])}", flush=True)
     print(f"fuzzy scorer: backend={fuzzy_scorer['backend']} "
           f"version={fuzzy_scorer['version']}", flush=True)
+    llm_ids, ids_digest, ids_path = load_llm_ids(
+        args.llm_ids_file, payload, manifest.get("files") or {},
+        require_manifest=not args.skip_payload_verification,
+    )
+    args.llm_ids_sha256 = ids_digest
+    args.llm_ids_count = len(llm_ids or ())
+    if llm_ids is not None:
+        print(f"LLM id mask: {args.llm_ids_count} ids | {ids_digest[:16]} | {ids_path}",
+              flush=True)
     signature = run_signature(args, manifest_hash, fuzzy_scorer)
     print(f"run signature: {signature[:16]}", flush=True)
 
@@ -286,6 +353,7 @@ def main():
         rescue_no_candidates=args.rescue_no_candidates,
         rescue_table_k=args.rescue_table_k,
         rescue_min_score=args.rescue_min_score,
+        llm_ids=llm_ids,
     )
     print(f"OK -> {args.out}")
 

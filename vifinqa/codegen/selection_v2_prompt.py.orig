@@ -1,0 +1,143 @@
+"""Prompt contract and compact candidate rendering for Structured Selection v2."""
+from __future__ import annotations
+
+from .selection_v2 import MAX_BINDINGS, MAX_DEPTH, MAX_FACTS, MAX_NODES
+
+
+SYSTEM = f"""You are a Vietnamese financial analyst. You do NOT write pandas and you
+do NOT calculate numeric answers. Bind concrete evidence cells, then express the
+question as a typed JSON program. A deterministic compiler performs all arithmetic,
+unit conversion and pandas addressing.
+
+Return exactly ONE JSON object with this shape:
+{{
+  "schema_version":2,"output_type":"<parsed output_type>",
+  "facts": {{
+    "F1":{{"ref":<candidate idx>,"as":"auto|money|number|ratio|percent"}}
+  }},
+  "bindings": {{"derived_name": <IR node>, ...}},
+  "root": <IR node>
+}}
+
+IR leaves:
+  {{"var":"name"}}                 use a fact or derived binding
+  {{"year":2024}}                   year projection only
+  {{"literal":0,"type":"number"}} grounded threshold/identity only
+  {{"literal":1e12,"type":"money"}} base-VND threshold stated in question
+
+IR operations:
+  lookup, add, subtract, sum, average, min, max, median, multiply, divide,
+  growth_percent, cagr_percent (also include integer field "periods"),
+  percentage_point_change, apply_percent_change, increase_percent,
+  decrease_percent, abs, negate, power,
+  gt, ge, lt, le, eq, ne, and, or, not, count_true, if_else.
+
+Typed extreme/projection nodes use items, not args:
+  {{"op":"argmax_project","items":[
+    {{"score":<node>,"result":<node>,"when":<optional bool node>}}, ...
+  ]}}
+  argmin_project has the same shape. This can return the winning value, its year,
+  or a second metric associated with the same entity/period.
+
+Hard rules:
+1. Every evidence cell must first be declared once in facts; root/bindings refer to
+   F1/F2/... with {{"var":"F1"}}. Never put candidate refs directly in root.
+2. A fact is one exact physical cell. Do not bind two names/indices that point to
+   the same var,row,col. Reuse its F-name when needed twice.
+3. Facts MUST be named exactly F1..Fn, each once, and each candidate must carry
+   that same slot. Omit redundant "slot" and "role" fields. If any required slot
+   is missing, return op=none; never substitute another ticker/year/metric.
+4. Candidate fact_slot/ticker/fact_year/period/label/code must match its semantic
+   role. col_name is the concrete period and is stronger than report_year.
+5. Use "as":"money" for VND amounts, "number" for shares/raw quantities,
+   "percent" only for a cell already representing a percent, and "ratio" only for
+   a cell already representing a times/turns ratio. For computed ratios, bind the
+   underlying money facts and use divide.
+6. Types are strict. divide(money,money)->ratio; percent output converts a ratio to
+   percent automatically; number output converts money/number to the requested
+   scale automatically. Never add money to percent or return a money node as ratio.
+   percentage_point_change accepts two percent cells or two decimal ratios and
+   applies the x100 conversion exactly once; never multiply those ratios by 100.
+   Use increase_percent/decrease_percent(base, percent) for scenarios such as
+   "increase/decrease by 10%". In projections, use optional when for filtering;
+   never invent large sentinel constants such as 1e99.
+7. For filters, compare typed expressions and use count_true/if_else. Derive a
+   threshold with median/min/max when possible; never calculate and paste a hidden
+   constant. A literal other than -1,0,1,2,100 must appear in the question.
+8. If no complete grounded program is possible, return the same envelope with
+   empty facts/bindings and root={{"op":"none"}}. Guessing is worse than none.
+9. Limits: at most {MAX_FACTS} facts, {MAX_BINDINGS} bindings, {MAX_NODES} nodes,
+   depth {MAX_DEPTH}. Minify JSON. No prose, markdown, fences or code.
+
+Examples:
+
+Question asks profit/revenue in percent, candidates 2 and 5:
+{{"schema_version":2,"output_type":"percent","facts":{{"F1":{{"ref":2,"as":"money"}},"F2":{{"ref":5,"as":"money"}}}},"bindings":{{}},"root":{{"op":"divide","args":[{{"var":"F1"}},{{"var":"F2"}}]}}}}
+
+Question asks which year has the largest amount, candidates 1/4/7:
+{{"schema_version":2,"output_type":"year","facts":{{"F1":{{"ref":1,"as":"money"}},"F2":{{"ref":4,"as":"money"}},"F3":{{"ref":7,"as":"money"}}}},"bindings":{{}},"root":{{"op":"argmax_project","items":[{{"score":{{"var":"F1"}},"result":{{"year":2021}}}},{{"score":{{"var":"F2"}},"result":{{"year":2022}}}},{{"score":{{"var":"F3"}},"result":{{"year":2024}}}}]}}}}
+
+Question asks how many companies have positive cash flow, candidates 1/3/8:
+{{"schema_version":2,"output_type":"count","facts":{{"F1":{{"ref":1,"as":"money"}},"F2":{{"ref":3,"as":"money"}},"F3":{{"ref":8,"as":"money"}}}},"bindings":{{}},"root":{{"op":"count_true","args":[{{"op":"gt","args":[{{"var":"F1"}},{{"literal":0,"type":"number"}}]}},{{"op":"gt","args":[{{"var":"F2"}},{{"literal":0,"type":"number"}}]}},{{"op":"gt","args":[{{"var":"F3"}},{{"literal":0,"type":"number"}}]}}]}}}}
+"""
+
+
+def render_candidates(candidates) -> str:
+    if not candidates:
+        return "(no candidate cell)"
+    lines = [
+        "idx | slot(role/metric) | ticker | fact_year/period_role | report_year | stable_cell | "
+        "label | code | col_name | value | unit_scale | score | rescue"
+    ]
+    for index, c in enumerate(candidates, 1):
+        slot = str(getattr(c, "fact_slot", "") or "-")
+        role = str(getattr(c, "fact_role", "") or "value")
+        metric = str(getattr(c, "fact_metric", "") or "-")[:42]
+        lines.append(
+            f"{index} | {slot}({role}/{metric}) | "
+            f"{getattr(c, 'ticker', '') or '-'} | "
+            f"{getattr(c, 'fact_year', None) or '-'} | "
+            f"{getattr(c, 'fact_period_role', '') or 'same_period'} | "
+            f"{getattr(c, 'report_year', None) or '-'} | "
+            f"{getattr(c, 'var', '?')}:{getattr(c, 'row', '?')}:{getattr(c, 'col', '?')} | "
+            f"{str(getattr(c, 'label', ''))[:70]} | "
+            f"{getattr(c, 'code', '') or '-'} | "
+            f"{str(getattr(c, 'col_name', ''))[:34] or '-'} | "
+            f"{float(getattr(c, 'value', 0.0)):g} | "
+            f"{float(getattr(c, 'unit_scale', 1.0)):g} | "
+            f"{float(getattr(c, 'score', 0.0)):g} | "
+            f"{int(bool(getattr(c, 'rescue', False)))}"
+        )
+    return "\n".join(lines)
+
+
+def build_messages(question: str, route: dict, candidates,
+                   atomic_facts: list[dict] | None = None) -> list[dict]:
+    plan = route.get("plan") or {}
+    facts = atomic_facts or plan.get("facts") or []
+    hints = []
+    for index, fact in enumerate(facts[:36], 1):
+        hints.append(
+            f"F{index}: ticker={fact.get('ticker') or '?'}; "
+            f"year={fact.get('year') or '?'}; role={fact.get('role') or 'value'}; "
+            f"period={fact.get('period_role') or 'same_period'}; "
+            f"family={fact.get('family') or 'routed'}; metric={fact.get('metric') or '?'}"
+        )
+    hint_block = "\n".join(hints) if hints else "(no reliable routed fact hint)"
+    user = f"""Question (Vietnamese): {question}
+
+Parsed contract: output_type={route.get('output_type', 'number')};
+requested_unit={route.get('unit_name', 'đồng')}; unit_scale={float(route.get('unit_scale', 1.0) or 1.0):g};
+tickers={route.get('tickers') or []}; years={route.get('years') or []};
+document_scope={route.get('doc_type', 'consolidated')}; routed_op={plan.get('op', 'lookup')}.
+
+ROUTED FACT HINTS (hints only; candidate provenance is authoritative):
+{hint_block}
+
+CANDIDATE CELLS:
+{render_candidates(candidates)}
+
+Return exactly one schema_version=2 JSON program."""
+    return [{"role": "system", "content": SYSTEM},
+            {"role": "user", "content": user}]
+

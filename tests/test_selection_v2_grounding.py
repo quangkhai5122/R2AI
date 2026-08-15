@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from vifinqa.codegen.selection_v2 import (
+    IRValidationError,
+    compile_program,
+    validate_output_value,
+)
+
+
+def _candidate(index: int, *, slot: str, ticker: str = "AAA",
+               year: int = 2024, label: str = "Doanh thu"):
+    return SimpleNamespace(
+        var=f"df{index}", row=index, col=1, label=label, code="",
+        col_name=str(year), value=float(index), unit_scale=1.0, score=80.0,
+        rescue=False, fact_year=year, report_year=year, fact_slot=slot,
+        fact_role="value", fact_metric=label, ticker=ticker,
+        report_id=f"{ticker}_{year}_{index}", table_pos=index,
+    )
+
+
+def _fact(ref: int, slot: str = "") -> dict:
+    out = {"ref": ref, "as": "money", "role": "value"}
+    if slot:
+        out["slot"] = slot
+    return out
+
+
+def _program(facts: dict, root: dict, output_type: str = "number") -> dict:
+    return {"schema_version": 2, "output_type": output_type,
+            "facts": facts, "bindings": {}, "root": root}
+
+
+def _atomic(ticker: str, year: int, metric: str = "doanh thu") -> dict:
+    return {"ticker": ticker, "year": year, "metric": metric,
+            "role": "value", "family": "routed_fact"}
+
+
+def test_same_candidate_ref_cannot_be_bound_to_multiple_fact_names():
+    program = _program(
+        {"a": _fact(1), "b": _fact(1)},
+        {"op": "sum", "args": [{"var": "a"}, {"var": "b"}]},
+    )
+    with pytest.raises(IRValidationError, match="multiple facts"):
+        compile_program(program, [_candidate(1, slot="F1")],
+                        {"output_type": "number", "unit_scale": 1}, "q")
+
+
+def test_atomic_shortlist_must_contain_every_required_slot():
+    candidates = [_candidate(1, slot="F1")]
+    with pytest.raises(IRValidationError, match="shortlist lacks required atomic slots"):
+        compile_program(
+            _program({"a": _fact(1)}, {"var": "a"}), candidates,
+            {"output_type": "number", "unit_scale": 1}, "q",
+            atomic_facts=[_atomic("AAA", 2024), _atomic("BBB", 2024)],
+        )
+
+
+def test_program_must_select_each_atomic_slot_exactly_once():
+    candidates = [_candidate(1, slot="F1"), _candidate(2, slot="F2")]
+    with pytest.raises(IRValidationError, match=r"missing=\['F2'\]"):
+        compile_program(
+            _program({"a": _fact(1)}, {"var": "a"}), candidates,
+            {"output_type": "number", "unit_scale": 1}, "q",
+            atomic_facts=[_atomic("AAA", 2024), _atomic("AAA", 2024)],
+        )
+
+
+@pytest.mark.parametrize(
+    "candidate,atomic,match",
+    [
+        (_candidate(1, slot="F1", ticker="BBB"), _atomic("AAA", 2024),
+         "expected AAA"),
+        (_candidate(1, slot="F1", year=2023), _atomic("AAA", 2024),
+         "expected 2024"),
+    ],
+)
+def test_selected_candidate_must_match_atomic_ticker_and_year(candidate, atomic, match):
+    with pytest.raises(IRValidationError, match=match):
+        compile_program(
+            _program({"a": _fact(1, "F1")}, {"var": "a"}), [candidate],
+            {"output_type": "number", "unit_scale": 1}, "q",
+            atomic_facts=[atomic],
+        )
+
+
+def test_routed_ranking_requires_projection_root():
+    candidate = _candidate(1, slot="F1")
+    route = {"output_type": "number", "unit_scale": 1,
+             "plan": {"op": "ranking"}}
+    with pytest.raises(IRValidationError, match="routed ranking requires"):
+        compile_program(
+            _program({"a": _fact(1, "F1")}, {"var": "a"}), [candidate],
+            route, "cao nhat", atomic_facts=[_atomic("AAA", 2024)],
+        )
+
+
+def test_single_metric_total_assets_anchor_rejects_unrelated_labels():
+    candidates = [
+        _candidate(1, slot="F1", ticker="AAA", label="Chi phí sửa chữa tài sản"),
+        _candidate(2, slot="F2", ticker="BBB", label="Lỗ chênh lệch tỷ giá"),
+    ]
+    route = {"output_type": "number", "unit_scale": 1,
+             "plan": {"op": "difference"}}
+    program = _program(
+        {"a": _fact(1, "F1"), "b": _fact(2, "F2")},
+        {"op": "subtract", "args": [{"var": "a"}, {"var": "b"}]},
+    )
+    with pytest.raises(IRValidationError, match="anchor total_assets"):
+        compile_program(
+            program, candidates, route,
+            "Chênh lệch tổng tài sản giữa hai công ty là bao nhiêu?",
+            atomic_facts=[_atomic("AAA", 2024, "san giua"),
+                          _atomic("BBB", 2024, "san giua")],
+        )
+
+
+def test_single_metric_total_assets_anchor_accepts_exact_labels():
+    candidates = [
+        _candidate(1, slot="F1", ticker="AAA", label="Tổng tài sản"),
+        _candidate(2, slot="F2", ticker="BBB", label="Tổng cộng tài sản"),
+    ]
+    route = {"output_type": "number", "unit_scale": 1,
+             "plan": {"op": "difference"}}
+    compiled = compile_program(
+        _program(
+            {"a": _fact(1, "F1"), "b": _fact(2, "F2")},
+            {"op": "subtract", "args": [{"var": "a"}, {"var": "b"}]},
+        ),
+        candidates, route, "Chênh lệch tổng tài sản là bao nhiêu?",
+        atomic_facts=[_atomic("AAA", 2024, "san giua"),
+                      _atomic("BBB", 2024, "san giua")],
+    )
+    assert compiled.referenced_indices == (1, 2)
+
+
+def test_comparative_gap_output_guard_rejects_negative_answer():
+    assert validate_output_value(
+        -71.69, "number",
+        "Giá trị năm 2020 bé hơn năm 2018 bao nhiêu tỷ đồng?",
+    ) is not None
+    assert validate_output_value(
+        71.69, "number",
+        "Giá trị năm 2020 bé hơn năm 2018 bao nhiêu tỷ đồng?",
+    ) is None

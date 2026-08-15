@@ -1,0 +1,494 @@
+# RUNBOOK P2.2 — Structured Selection v2
+
+Tài liệu này là hướng dẫn runnable cho P2.2. Control bất biến là submission #19
+`artifacts/codegen_p21r_all_v3.jsonl` (ANSWER/EXEC `0.2292`). P2.2 chỉ được phép
+điền các `structural-none`; không chạy lại hay ghi đè 792 output đang thành công.
+
+## 1. Thiết kế đã khóa
+
+- `select_v2` không sinh pandas. Qwen chỉ trả JSON gồm fact có tên, binding trung gian
+  và cây typed IR lồng nhau.
+- Atomic metric-slot planner tách `filter`, `rank`, `project`, `numerator`,
+  `denominator`, `base`, `end` theo ticker/year/period trước khi shortlist.
+- Compiler xác định kiểm schema, kiểu, unit, literal grounding, stable-cell uniqueness,
+  entity/year projection, giới hạn 36 fact / 48 binding / 128 node / depth 14, execution
+  và semantic validation. Policy grounded v2 còn bắt mỗi candidate-ref chỉ có một fact,
+  phủ đủ và đúng một lần mọi F-slot, khớp ticker/year, ranking phải dùng projection và
+  kiểm metric anchor độ chính xác cao. Bất kỳ lỗi nào đều giữ placeholder của #19.
+- Mỗi candidate chỉ được khai báo ở top-level `facts`; root/binding chỉ tham chiếu tên.
+  Query cuối vẫn là một expression có thể replay trong submission.
+- `n=2` chỉ tăng cơ hội có JSON hợp lệ theo chính sách first-valid; đây không phải
+  majority vote hay self-consistency accuracy.
+
+Hai lượt chạy bắt buộc tách riêng:
+
+| Lượt | Mask | Số câu | Rescue | Mục đích |
+|---|---|---:|---|---|
+| B | `p22b_groundable_v2.json` | 15 | tắt | subset B có shortlist phủ đủ atomic F-slot, không truncated |
+| C | `p22c_groundable_v2.json` | 31 | bật | subset C rescue phủ đủ atomic F-slot, không truncated |
+
+Không chạy mask BC trước B. B và C rời nhau; C chỉ chạy sau khi đã download/audit B.
+
+## 2. Gate local trước khi upload
+
+```powershell
+cd D:\Python_Project\Hackathon\R2AI_2026
+.venv\Scripts\activate
+
+python scripts/45_make_p22_target_masks.py --dry-run
+python -m pytest -q --basetemp artifacts/pytest_tmp_p22_release
+python -m compileall -q vifinqa kaggle scripts tests
+
+python scripts/04_make_kaggle_payload.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --target-dir artifacts/p22_targets `
+  --dataset-id lequangkhai5122005/vifinqa-payload `
+  --dry-run
+```
+
+Gate đã đo ở checkout hiện tại:
+
+- full suite sau bản vá OOM: **243 passed**;
+- retrieval SHA-256:
+  `96b71c5b31a193dcad969de6b1e5ac64ff38c36bfcd44c15e491c240f09d685a`;
+- payload schema **5**, 270 manifest files, source/runtime **61/61 khớp** là payload đã
+  sinh checkpoint Stage B ban đầu;
+- stable manifest SHA-256:
+  `f174502ed8fe595e96023cfc6202e2be13fa2ea304fae8b3097180cb4908b70f`;
+- raw `payload-manifest.json` SHA-256:
+  `15d6bcff3bcbb849eecee88327de699f93bb9cd856ecbd4098532b584c64fdb7`;
+- mask B SHA-256:
+  `5e6b98da39a40537a7c4509fcb3583f3b1dc0ede9076749934604edab2f851a8`;
+- mask C SHA-256:
+  `ac8a807680a9d958bdb2759f764b3ff6c112d4aec8bfa470ce8571fe9fb65c17`.
+
+Runtime hiện hành đã nâng lên payload schema **6** để thêm fallback `n=2 -> n=1+n=1`
+khi một prompt gây OOM. Schema 5 ở trên chỉ là provenance của checkpoint cũ; không được
+dùng lại cho tail/C sau khi source đã đổi.
+
+CPU shortlist audit (đã chạy, không phải model accuracy):
+
+- B: 55/55 shortlist nonempty; 15/55 phủ đủ mọi atomic slot; prompt median 7,092 ký
+  tự; không rescue.
+- C: 48/48 shortlist nonempty; 31/48 phủ đủ mọi atomic slot sau atomic rescue;
+  prompt median 7,632.5 ký tự. Mask C được freeze bằng routed fact coverage của rescue
+  v1; metric atomic mới nghiêm hơn nên 17 câu vẫn partial và compiler phải fail closed.
+- P2.4 tune oracle: 82/100 gold AST đã compile/replay trực tiếp. 18 failure còn lại
+  chủ yếu do bộ chuyển gold bảo thủ giữ scale/sentinel hoặc median đã làm phẳng; con số
+  này đo representability của adapter, không phải accuracy của Qwen.
+
+## 3. Rebuild và upload payload Kaggle
+
+```powershell
+python scripts/04_make_kaggle_payload.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --target-dir artifacts/p22_targets `
+  --dataset-id lequangkhai5122005/vifinqa-payload
+
+kaggle datasets version `
+  -p artifacts/kaggle_payload `
+  -m "P2.2 schema6 sequential OOM fallback" `
+  --dir-mode zip
+```
+
+Nếu upload qua giao diện web, upload nguyên thư mục `artifacts/kaggle_payload`. Trên
+Kaggle chỉ attach đúng một version payload; cell đầu notebook phải in schema 6. Số file
+là 270 trước khi có tail mask và 271 sau khi `p22b_oom_tail.json` được thêm. Không dùng
+`--skip-payload-verification` cho full run/submission.
+
+Notebook chuẩn: `kaggle/vifinqa-codegen-p22.ipynb`.
+
+## 4. Chạy Local (tùy chọn)
+
+Runner Local phải là bản nằm **trong payload**, để runtime directory trùng manifest:
+
+```powershell
+python artifacts/kaggle_payload/code/kaggle_codegen.py `
+  --payload artifacts/kaggle_payload --backend hf `
+  --model Qwen/Qwen2.5-Coder-14B-Instruct --load-4bit `
+  --llm-mode select_v2 --llm-target empty `
+  --llm-ids-file targets/p22b_rejected_non_year.json `
+  --out artifacts/codegen_p22b_sel14b.jsonl `
+  --n 2 --temperature 0.2 --k 0 `
+  --max-tokens 768 --max-input-tokens 7000 `
+  --batch-size 2 --checkpoint-every 8 `
+  --time-budget-min 240 --seed 13
+```
+
+Lượt C dùng output mới và thêm rescue:
+
+```powershell
+python artifacts/kaggle_payload/code/kaggle_codegen.py `
+  --payload artifacts/kaggle_payload --backend hf `
+  --model Qwen/Qwen2.5-Coder-14B-Instruct --load-4bit `
+  --llm-mode select_v2 --llm-target empty `
+  --llm-ids-file targets/p22c_rescue_fact_complete.json `
+  --out artifacts/codegen_p22c_sel14b.jsonl `
+  --n 2 --temperature 0.2 --k 0 `
+  --rescue-no-candidates --rescue-table-k 20 --rescue-min-score 28 `
+  --max-tokens 768 --max-input-tokens 7000 `
+  --batch-size 2 --checkpoint-every 8 `
+  --time-budget-min 240 --seed 13
+```
+
+Log full B phải có `LLM queue: 55`; log full C phải có `LLM queue: 48`. Nếu khác, dừng
+và kiểm payload/mask/output cũ trước khi chạy GPU tiếp.
+
+## 5. Chạy Kaggle
+
+1. Import `kaggle/vifinqa-codegen-p22.ipynb`.
+2. Chọn GPU T4 x2, Internet On, attach payload schema 6 mới nhất.
+3. Chạy smoke. Smoke dùng file riêng, `limit=12`, `target=all`, không resume vào B/C.
+4. Chạy B đến khi QA báo `target 55 / attempted 55 / pending 0`; download
+   `codegen_p22b_sel14b.jsonl` ngay.
+5. Chỉ sau khi giữ được B mới chạy C; QA phải báo `48 / 48 / 0`; download
+   `codegen_p22c_sel14b.jsonl`.
+
+Nếu phiên hết giữa chừng, giữ checkpoint và chạy lại **đúng toàn bộ command** vào cùng
+`--out`. Không đổi batch size, checkpoint size, max token, mask, model, package/model
+revision, temperature hay rescue flags trong một checkpoint. Nếu buộc phải đổi để xử lý
+OOM, dùng tên output mới; run signature cố ý khác.
+
+Riêng OOM ở Stage B chunk 7/7 ngày 2026-08-13, không resume checkpoint schema 5 bằng
+runtime schema 6. Thực hiện đúng mục 9 để chỉ chạy tail đã fingerprint.
+
+## 6. Audit, hybrid và build submission B
+
+Đặt file Kaggle đã download tại `artifacts/codegen_p22b_sel14b.jsonl`, rồi chạy:
+
+```powershell
+python scripts/48_audit_p22_codegen.py `
+  --codegen artifacts/codegen_p22b_sel14b.jsonl `
+  --retrieval artifacts/retrieval.jsonl `
+  --mask artifacts/p22_targets/p22b_rejected_non_year.json `
+  --out artifacts/codegen_p22b_sel14b.audit.json
+
+python scripts/11_merge_codegen_hybrid.py `
+  --primary artifacts/codegen_p21r_all_v3.jsonl `
+  --fallback artifacts/codegen_p22b_sel14b.jsonl `
+  --out artifacts/codegen_p22b_hybrid.jsonl `
+  --audit artifacts/codegen_p22b_hybrid.audit.json
+
+python scripts/05_build_submission.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/codegen_p22b_hybrid.jsonl `
+  --out-dir artifacts/submission_p22b `
+  --sub-k 5
+```
+
+Chỉ nộp `artifacts/submission_p22b/submission.zip` sau khi audit không có pending/outside
+mask và build báo 1,012 query eval-compilable. Không dùng `--expand-docs`.
+
+## 7. Audit, merge C vào B và build submission BC
+
+```powershell
+python scripts/48_audit_p22_codegen.py `
+  --codegen artifacts/codegen_p22c_sel14b.jsonl `
+  --retrieval artifacts/retrieval.jsonl `
+  --mask artifacts/p22_targets/p22c_rescue_fact_complete.json `
+  --out artifacts/codegen_p22c_sel14b.audit.json
+
+python scripts/11_merge_codegen_hybrid.py `
+  --primary artifacts/codegen_p22b_hybrid.jsonl `
+  --fallback artifacts/codegen_p22c_sel14b.jsonl `
+  --out artifacts/codegen_p22bc_hybrid.jsonl `
+  --audit artifacts/codegen_p22bc_hybrid.audit.json
+
+python scripts/05_build_submission.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/codegen_p22bc_hybrid.jsonl `
+  --out-dir artifacts/submission_p22bc `
+  --sub-k 5
+```
+
+Nộp B trước BC để tách causal gain của typed IR không-rescue và rescue. Không dùng public
+leaderboard để lặp threshold/prompt nhiều lần.
+
+## 8. P2.4 tune và báo cáo kết quả
+
+Nếu muốn so sánh offline trên tune đã hoàn tất, dùng output hybrid đầy đủ 1,012 ID và tên
+report mới (evaluator không ghi đè):
+
+```powershell
+python scripts/14_p24_devset.py evaluate --split tune `
+  --gold artifacts/devset_p24/p24_tune_gold.final.jsonl `
+  --codegen artifacts/codegen_p22b_hybrid.jsonl `
+  --output artifacts/devset_p24/eval_p22b_tune.json
+
+python scripts/14_p24_devset.py evaluate --split tune `
+  --gold artifacts/devset_p24/p24_tune_gold.final.jsonl `
+  --codegen artifacts/codegen_p22bc_hybrid.jsonl `
+  --output artifacts/devset_p24/eval_p22bc_tune.json
+```
+
+Không mở locked split để chọn prompt/threshold. Khi báo kết quả, gửi bốn file audit B/C,
+hybrid B/BC, hai leaderboard JSON và hai codegen Kaggle; phân tích cần tách coverage,
+accepted/rejected reason, output type và B so với BC.
+
+## 9. Phục hồi Stage B sau CUDA OOM ở chunk 7/7
+
+Checkpoint Stage B được flush ngay trước khi runner ném lỗi. Với mask 55 và
+`--checkpoint-every 8`, sáu chunk đầu tương ứng 48 ID; cả chunk cuối có 7 ID không được
+commit. Con số 48/7 là kỳ vọng từ lịch chunk, nhưng phải để audit đọc marker thực tế xác
+nhận; không tự viết danh sách ID bằng tay.
+
+### 9.1. Giữ và audit checkpoint gốc
+
+Tải `/kaggle/working/codegen_p22b_sel14b.jsonl` và giữ nguyên tại:
+
+```powershell
+# artifacts/codegen_p22b_sel14b.jsonl
+
+python scripts/48_audit_p22_codegen.py `
+  --codegen artifacts/codegen_p22b_sel14b.jsonl `
+  --retrieval artifacts/retrieval.jsonl `
+  --mask artifacts/p22_targets/p22b_rejected_non_year.json `
+  --allow-incomplete `
+  --out artifacts/codegen_p22b_sel14b.checkpoint.audit.json
+
+python scripts/49_make_p22_oom_tail_mask.py `
+  --checkpoint artifacts/codegen_p22b_sel14b.jsonl `
+  --parent-mask artifacts/p22_targets/p22b_rejected_non_year.json `
+  --retrieval artifacts/retrieval.jsonl `
+  --expect-pending 7 `
+  --out artifacts/p22_targets/p22b_oom_tail.json
+```
+
+Hai lệnh phải báo 1.012 row, đúng một run signature, `attempted=48`, `pending=7` và
+cùng bảy `pending_ids`. Nếu khác, dừng và không dùng `--expect-pending` khác để ép pass;
+gửi checkpoint cùng audit để kiểm tra.
+
+Kết quả thực tế đã xác nhận ngày 2026-08-13:
+
+- checkpoint SHA-256 `4f6c0bee9879c61eb8ede2a98fd4e9287fc5542c2e6b068f7a0555a4488a6caa`;
+- `attempted=48`, `pending=7`, `accepted=10`, `rejected=38`;
+- pending IDs: `909, 926, 939, 966, 992, 1001, 1012`;
+- tail-mask SHA-256 `2ab36ca76fafbb64666892383ffc9aace652158af6a474da0fbd301afe1dcf13`;
+- semantic review: chỉ ID 855 plausible nhưng chưa gold-verified; 9/10 accepted còn lại
+  thiếu grounding metric/entity/year rõ ràng.
+
+**HOLD:** không merge checkpoint, không upload payload tail và không chạy Stage C. Trước
+hết phải thêm deterministic provenance/coverage guards và replay raw responses đã lưu.
+
+### 9.2. Rebuild/upload payload schema 6 chứa tail mask — chỉ sau khi HOLD được gỡ
+
+```powershell
+python scripts/04_make_kaggle_payload.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --target-dir artifacts/p22_targets `
+  --dataset-id lequangkhai5122005/vifinqa-payload
+
+kaggle datasets version `
+  -p artifacts/kaggle_payload `
+  -m "P2.2 schema6 Stage-B OOM tail" `
+  --dir-mode zip
+```
+
+Payload recovery phải có schema 6, `targets/p22b_oom_tail.json` nằm trong manifest và,
+nếu target directory chỉ thêm đúng mask này, 271 manifest files. Không attach đồng thời
+schema 5 và schema 6.
+
+### 9.3. Chạy tail trên Kaggle
+
+Import `kaggle/vifinqa-codegen-p22-oom-tail.ipynb`, attach đúng một payload schema 6 và
+chạy toàn bộ cell. Notebook dùng:
+
+- output mới `codegen_p22b_oom_tail_sel14b.jsonl`;
+- mask tail đã fingerprint, không phải mask B=55;
+- `batch-size=1`, `checkpoint-every=1`, `max-input-tokens=6000`, `max-tokens=512`;
+- vẫn `n=2`; nếu hai return sequence cùng lúc OOM, runner sinh tuần tự `n=1 + n=1`.
+
+Không copy checkpoint gốc trở lại `/kaggle/working` và không resume vào nó. Download
+`codegen_p22b_oom_tail_sel14b.jsonl` sau khi QA notebook báo `attempted == target`.
+
+### 9.4. Audit và hybrid hai bước
+
+```powershell
+python scripts/48_audit_p22_codegen.py `
+  --codegen artifacts/codegen_p22b_oom_tail_sel14b.jsonl `
+  --retrieval artifacts/retrieval.jsonl `
+  --mask artifacts/p22_targets/p22b_oom_tail.json `
+  --out artifacts/codegen_p22b_oom_tail_sel14b.audit.json
+
+# Giữ mọi output #19; chỉ lấy các câu B đã thành công trong checkpoint 48-ID.
+python scripts/11_merge_codegen_hybrid.py `
+  --primary artifacts/codegen_p21r_all_v3.jsonl `
+  --fallback artifacts/codegen_p22b_sel14b.partial.jsonl `
+  --out artifacts/codegen_p22b_partial_hybrid.jsonl `
+  --audit artifacts/codegen_p22b_partial_hybrid.audit.json
+
+# Giữ kết quả trên, chỉ lấy các câu tail thành công cho structural-none còn lại.
+python scripts/11_merge_codegen_hybrid.py `
+  --primary artifacts/codegen_p22b_partial_hybrid.jsonl `
+  --fallback artifacts/codegen_p22b_oom_tail_sel14b.jsonl `
+  --out artifacts/codegen_p22b_recovered_hybrid.jsonl `
+  --audit artifacts/codegen_p22b_recovered_hybrid.audit.json
+
+python scripts/05_build_submission.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/codegen_p22b_recovered_hybrid.jsonl `
+  --out-dir artifacts/submission_p22b_recovered `
+  --sub-k 5
+```
+
+Chỉ sau khi audit tail pass, hai audit hybrid tồn tại và submission replay đủ 1.012 ID mới
+được chạy Stage C. Khi chạy C, dùng notebook chính đã cập nhật schema 6 và output C mới.
+
+Artifact `p22b_recovered` là recovery có kiểm soát: 48 attempt đầu đến từ payload schema 5,
+tail đến từ schema 6 với token cap thấp hơn. Nó hợp lệ để cứu GPU và đo leaderboard, nhưng
+không phải một run đồng nhất bitwise. Nếu cần thí nghiệm xác nhận sạch, chạy lại toàn bộ
+B=55 dưới schema 6 trong một output mới ở lượt sau.
+
+## 10. Grounded compiler v2 — quy trình hiện hành (authoritative)
+
+> Mục này thay thế quy trình tail ở mục 9 và các lệnh B=55/C=48 cũ. Notebook
+> `vifinqa-codegen-p22-oom-tail.ipynb` đã **retire và fail-fast**. Không resume
+> checkpoint schema 5, không chạy tail 7 câu và không merge trực tiếp checkpoint cũ.
+
+### 10.1. Kết quả replay checkpoint đã lưu
+
+Compiler policy hiện hành là `typed_nested_ir_v2_grounded`. Ngoài type/schema/unit guard,
+compiler bắt buộc:
+
+- một candidate ref chỉ được bind vào một fact;
+- shortlist phải có đủ mọi atomic slot `F1..Fn`, và program dùng mỗi slot đúng một lần;
+- candidate phải khớp ticker/year của slot;
+- route `ranking` phải có root `argmax_project` hoặc `argmin_project`;
+- metric anchor độ chính xác cao và comparative-gap âm bị fail closed.
+
+CPU replay toàn bộ raw response trong
+`artifacts/codegen_p22b_sel14b.jsonl` cho kết quả:
+
+- 1.012 row; target 55; attempted 48; pending 7;
+- old accepted 10 → **1 accepted (ID 855), 9 rejected**;
+- old rejected 38 → 38 rejected;
+- mọi raw response đều nguyên vẹn, `raw_truncated=0`, SHA-256 khớp;
+- artifact replay:
+  `artifacts/codegen_p22b_sel14b_guarded_replay.jsonl`;
+- audit:
+  `artifacts/codegen_p22b_sel14b_guarded_replay.audit.json`;
+- replay output SHA-256:
+  `7e01b2bf848762452eb0b4ff722e8f3eed849a5ff7e68d84c6e417c43077ba15`.
+
+Hybrid smoke với #19 chỉ chọn đúng một fallback (ID 855), và submission smoke đã build
+đủ 1.012 entry / 1.572 CSV. Đây là validation kỹ thuật, **không phải submission được
+khuyến nghị** và không chứng minh ID 855 đúng gold.
+
+### 10.2. Mask GPU mới
+
+Mask được freeze chỉ từ retrieval/store/shortlist, không dùng gold hay leaderboard:
+
+| Stage | Mask | Số câu | Loại |
+|---|---|---:|---|
+| B | `artifacts/p22_targets/p22b_groundable_v2.json` | 15 | no-rescue, atomic-complete, không truncated |
+| C | `artifacts/p22_targets/p22c_groundable_v2.json` | 31 | rescue, atomic-complete, không truncated |
+
+B loại 40/55 câu có shortlist thiếu atomic slot. C loại 17/48 câu cùng lý do. Gửi các
+câu thiếu evidence cho LLM chỉ tốn GPU và buộc compiler reject, nên không nằm trong lượt
+hiện hành.
+
+### 10.3. Gate local, build và upload payload schema 7
+
+```powershell
+cd D:\Python_Project\Hackathon\R2AI_2026
+.venv\Scripts\activate
+
+python -m pytest tests -q --basetemp artifacts/pytest_tmp_p22_schema7
+python -m compileall -q vifinqa kaggle scripts tests
+
+python scripts/04_make_kaggle_payload.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --target-dir artifacts/p22_targets `
+  --dataset-id lequangkhai5122005/vifinqa-payload
+
+kaggle datasets version `
+  -p artifacts/kaggle_payload `
+  -m "P2.2 schema7 grounded B15 C31" `
+  --dir-mode zip
+```
+
+Không upload nếu manifest không có `schema_version=7`, fuzzy scorer
+`difflib.SequenceMatcher/v1`, frozen retrieval SHA
+`96b71c5b31a193dcad969de6b1e5ac64ff38c36bfcd44c15e491c240f09d685a`, hoặc
+hai mask mới không nằm trong `manifest.files`.
+
+### 10.4. Chạy Kaggle — chỉ B trước
+
+1. Import `kaggle/vifinqa-codegen-p22.ipynb`.
+2. Attach đúng **một** version payload schema 7, GPU T4 x2, Internet On.
+3. Run All. Notebook dùng 14B NF4/HF, `n=2`, batch/checkpoint 1,
+   `max-input-tokens=6000`, `max-tokens=512`.
+4. Run All phải tự dừng ở gate `APPROVE_STAGE_C=False`. Đây là hành vi đúng.
+5. Log B phải có `payload verified: schema=7`, `LLM queue: 15` và các chunk.
+6. QA B phải báo `target 15 / attempted 15 / pending 0`.
+7. Download `codegen_p22b_groundable_sel14b.jsonl` rồi dừng; chưa bật Stage C.
+
+Schema 7 vẫn tự hạ batch và, nếu `n=2` OOM, sinh tuần tự `n=1 + n=1`. Nếu một
+sample đơn vẫn OOM, giữ checkpoint, gửi log và file về local; không tự giảm token hay đổi
+flag trong cùng output/signature.
+
+### 10.5. Gate local bắt buộc sau khi download B
+
+```powershell
+python scripts/48_audit_p22_codegen.py `
+  --codegen artifacts/codegen_p22b_groundable_sel14b.jsonl `
+  --retrieval artifacts/retrieval.jsonl `
+  --mask artifacts/p22_targets/p22b_groundable_v2.json `
+  --out artifacts/codegen_p22b_groundable_sel14b.audit.json
+
+python scripts/50_replay_p22_checkpoint.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --checkpoint artifacts/codegen_p22b_groundable_sel14b.jsonl `
+  --control artifacts/codegen_p21r_all_v3.jsonl `
+  --mask artifacts/p22_targets/p22b_groundable_v2.json `
+  --store artifacts/store `
+  --out artifacts/codegen_p22b_groundable_guarded.jsonl `
+  --audit artifacts/codegen_p22b_groundable_guarded.audit.json `
+  --k 0 --top-n 24
+
+python scripts/48_audit_p22_codegen.py `
+  --codegen artifacts/codegen_p22b_groundable_guarded.jsonl `
+  --retrieval artifacts/retrieval.jsonl `
+  --mask artifacts/p22_targets/p22b_groundable_v2.json `
+  --out artifacts/codegen_p22b_groundable_guarded.codegen_audit.json
+
+python scripts/11_merge_codegen_hybrid.py `
+  --primary artifacts/codegen_p21r_all_v3.jsonl `
+  --fallback artifacts/codegen_p22b_groundable_guarded.jsonl `
+  --out artifacts/codegen_p22b_groundable_hybrid.jsonl `
+  --audit artifacts/codegen_p22b_groundable_hybrid.audit.json
+
+python scripts/05_build_submission.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/codegen_p22b_groundable_hybrid.jsonl `
+  --out-dir artifacts/submission_p22b_groundable `
+  --sub-k 5
+```
+
+Hai audit đầu phải báo target/attempted 15, pending 0. Chỉ output CPU replay mới được
+đưa vào hybrid; không merge trực tiếp file Kaggle. Sau gate, gửi codegen B và hai audit
+để review accepted output. **Chưa nộp và chưa chạy C** cho tới khi review này hoàn tất.
+
+### 10.6. Stage C sau khi B được duyệt
+
+Khi B đã audit xong, mở lại notebook, đổi duy nhất `APPROVE_STAGE_C=True`, rồi chạy
+cell C và QA C. Expected: `LLM queue: 31`, target/attempted 31, pending 0, output
+`codegen_p22c_groundable_sel14b.jsonl`. C cũng phải qua cùng chuỗi
+`48_audit → 50_replay → 48_audit → hybrid fill-only → build submission`, với primary
+là hybrid B đã duyệt và mask `p22c_groundable_v2.json`. Riêng replay C bắt buộc giữ
+đúng contract rescue đã dùng trên Kaggle:
+
+```powershell
+python scripts/50_replay_p22_checkpoint.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --checkpoint artifacts/codegen_p22c_groundable_sel14b.jsonl `
+  --control artifacts/codegen_p22b_groundable_hybrid.jsonl `
+  --mask artifacts/p22_targets/p22c_groundable_v2.json `
+  --store artifacts/store `
+  --out artifacts/codegen_p22c_groundable_guarded.jsonl `
+  --audit artifacts/codegen_p22c_groundable_guarded.audit.json `
+  --k 0 --top-n 24 `
+  --rescue-no-candidates `
+  --rescue-table-k 20 `
+  --rescue-min-score 28
+```

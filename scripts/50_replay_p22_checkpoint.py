@@ -1,0 +1,61 @@
+"""Replay a partial Structured Selection v2 checkpoint under current guards."""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from vifinqa.codegen.selection_v2_replay import replay_checkpoint
+from vifinqa.utils.io import setup_stdout
+
+
+def main() -> None:
+    setup_stdout()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--retrieval", default="artifacts/retrieval.jsonl")
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--control", required=True)
+    parser.add_argument("--mask", required=True)
+    parser.add_argument("--store", default="artifacts/store")
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--audit", default="")
+    parser.add_argument("--k", type=int, default=0)
+    parser.add_argument("--top-n", type=int, default=24)
+    parser.add_argument("--rescue-no-candidates", action="store_true")
+    parser.add_argument(
+        "--allow-checkpoint-superset", action="store_true",
+        help="replay only mask IDs and audit (never reuse) attempted IDs outside it",
+    )
+    parser.add_argument("--rescue-table-k", type=int, default=20)
+    parser.add_argument("--rescue-min-score", type=float, default=28.0)
+    args = parser.parse_args()
+
+    out = Path(args.out)
+    audit_path = Path(args.audit) if args.audit else out.with_suffix(".audit.json")
+    audit = replay_checkpoint(
+        Path(args.retrieval), Path(args.checkpoint), Path(args.control),
+        Path(args.mask), Path(args.store), out, audit_path,
+        k=args.k, top_n=args.top_n,
+        rescue_no_candidates=args.rescue_no_candidates,
+        rescue_table_k=args.rescue_table_k,
+        rescue_min_score=args.rescue_min_score,
+        allow_checkpoint_superset=args.allow_checkpoint_superset,
+    )
+    print(json.dumps({
+        "compiler_policy": audit["compiler_policy"],
+        "counts": audit["counts"],
+        "transitions": audit["transitions"],
+        "rejection_counts": audit["rejection_counts"],
+        "accepted_ids": audit["accepted_ids"],
+        "pending_ids": audit["pending_ids"],
+        "output_sha256": audit["output"]["sha256"],
+    }, ensure_ascii=False, indent=2))
+    print(f"codegen -> {out}")
+    print(f"audit   -> {audit_path}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pandas as pd
+
+from vifinqa.codegen import generate
+
+
+class _Store:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+
+class _Bundle:
+    def __init__(self, rec, _store, _k, run_signature="", **_kwargs):
+        self.id = rec["id"]
+        self.question = rec["question"]
+        self.route = rec["route"]
+        self.run_signature = run_signature
+        self.tables = [{"var": "df1", "report_id": f"AAA_{self.id}",
+                        "table_pos": 1}]
+        self.dfs = {"df1": pd.DataFrame([
+            {"row": 1, "col": 1, "value": float(self.id),
+             "unit_scale": 1.0, "label": "Số cổ phiếu",
+             "col_name": "2024"},
+        ])}
+        self._candidate = SimpleNamespace(
+            var="df1", row=1, col=1, value=float(self.id), unit_scale=1.0,
+            label="Số cổ phiếu", col_name="2024", score=90.0, rescue=False,
+            fact_year=2024, report_year=2024, fact_slot="F1",
+            fact_role="value", fact_metric="Số cổ phiếu", ticker="AAA",
+            report_id=f"AAA_{self.id}", table_pos=1, code="",
+        )
+        self.shortlist_trace = {"candidate_count": 1, "rescue_mode": "none"}
+
+    def shortlist(self, _encoder=None, top_n=24):
+        del top_n
+        return [self._candidate]
+
+    def shortlist_v2(self, _encoder=None, top_n=24):
+        return self.shortlist(_encoder, top_n)
+
+    def select_v2_messages(self, _encoder=None):
+        return [{"role": "user", "content": self.question}]
+
+    def used_vars(self, _code):
+        return self.tables
+
+
+class _Client:
+    name = "fake"
+
+    def __init__(self):
+        self.prompt_count = 0
+
+    def chat_batch(self, conversations, **_kwargs):
+        self.prompt_count += len(conversations)
+        program = {
+            "schema_version": 2,
+            "output_type": "number",
+            "facts": {"shares": {"ref": 1, "as": "number", "role": "value"}},
+            "bindings": {},
+            "root": {"var": "shares"},
+        }
+        return [[json.dumps(program)] for _ in conversations]
+
+
+def test_select_v2_runner_branch_and_id_mask(tmp_path: Path):
+    retrieval = tmp_path / "retrieval.jsonl"
+    output = tmp_path / "codegen.jsonl"
+    rows = [
+        {"id": i, "question": f"q{i}",
+         "route": {"output_type": "number", "unit_scale": 1.0,
+                   "unit_name": "cổ phiếu", "plan": {"facts": []}}}
+        for i in (1, 2)
+    ]
+    retrieval.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8",
+    )
+    client = _Client()
+    with patch.object(generate, "Store", _Store), \
+            patch.object(generate, "QuestionBundle", _Bundle):
+        generate.run_codegen(
+            retrieval, tmp_path, output, client,
+            use_rule_fallback=False, debug_rounds=0, checkpoint_every=2,
+            llm_mode="select_v2", llm_target="all", llm_ids={2},
+            run_signature="v2-test",
+        )
+    result = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert client.prompt_count == 1
+    assert result[0]["source"] == "none"
+    assert "llm_attempt_status" not in result[0]
+    assert result[1]["source"] == "llm_select_v2"
+    assert result[1]["answer"] == 2.0
+    assert result[1]["llm_attempt_status"] == "completed"
+    assert result[1]["selection_trace"]["schema_version"] == 2
+    assert result[1]["selection_trace"]["outcome"] == "accepted"
+

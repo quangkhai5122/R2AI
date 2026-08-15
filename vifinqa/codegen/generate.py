@@ -22,12 +22,15 @@ from ..utils.io import read_jsonl, write_jsonl
 from .executor import run_code, extract_code
 from .to_expression import try_to_expression
 from .formulas import describe_for_prompt
+from .atomic_slots import plan_atomic_slots
 from ..retrieval.shortlist import build_shortlist, render_shortlist
 from .prompts import SYSTEM, build_user, SELECT_SYSTEM, build_select_user
 from .rule_codegen import try_rule_answer
 from .rule_composite import try_composite_answer
 from .arbitrate import arbitrate
 from .selection import parse_selection, synthesize, confidence as sel_conf
+from .selection_v2 import evaluate_samples as evaluate_v2_samples
+from .selection_v2_prompt import build_messages as build_select_v2_messages
 from .semantic import (
     all_dataframe_refs,
     answer_dataframe_refs,
@@ -107,6 +110,8 @@ class QuestionBundle:
         self.cands: list[dict] = []
         self.tables: list[dict] = []
         self._shortlists = {}
+        self._atomic_facts: list[dict] | None = None
+        self._atomic_trace: dict = {}
         self.dfs: dict = {}
         self.shortlist_trace = {
             "rescue_enabled": self.rescue_no_candidates,
@@ -153,7 +158,8 @@ class QuestionBundle:
                 "ticker": c.get("ticker", ""),
                 "table_pos": int(c["table_pos"]), "page": c.get("page"),
                 "unit_scale": us, "unit_source": m.get("unit_source", "none"),
-                "report_year": int(m["year"]), "csv_text": csv_text,
+                "report_year": int(m["year"]), "context": m.get("context", ""),
+                "csv_text": csv_text,
             })
             self.dfs[var] = df_roundtrip(csv_text)
             self.cands.append(c)
@@ -201,6 +207,108 @@ class QuestionBundle:
             self._shortlists[key] = result
         return self._shortlists[key]
 
+    def atomic_slots(self) -> list[dict]:
+        if self._atomic_facts is None:
+            self._atomic_facts, self._atomic_trace = plan_atomic_slots(
+                self.question, self.route,
+            )
+        return self._atomic_facts
+
+    def shortlist_v2(self, encoder=None, top_n: int = 24):
+        """Role-aware shortlist used only by the opt-in v2 selector.
+
+        Unlike v1, rescue also runs for a partial atomic-slot allocation. Strict
+        candidates remain first; schema rescue only fills missing slots.
+        """
+        key = ("select_v2", id(encoder), int(top_n))
+        if key in self._shortlists:
+            return self._shortlists[key]
+        variants = self.route.get("metric_variants") or [self.route.get("metric_norm", "")]
+        facts = self.atomic_slots()
+
+        def grounded(candidates):
+            return [candidate for candidate in candidates
+                    if bool(getattr(candidate, "metric_grounded", False))]
+
+        def slots(candidates):
+            return {str(c.fact_slot) for c in candidates if getattr(c, "fact_slot", "")}
+
+        required = {f"F{i}" for i in range(1, len(facts) + 1)}
+        strict_raw = build_shortlist(
+            self.tables, variants, self.route.get("years") or [],
+            top_n=top_n, encoder=encoder, facts=facts or None,
+        )
+        strict = grounded(strict_raw)
+        result = strict
+        raw_result = strict_raw
+        rescue_mode = "none"
+        if self.rescue_no_candidates and not required <= slots(strict):
+            self._load_candidates(self._all_cands[:self.rescue_table_k])
+            widened_raw = build_shortlist(
+                self.tables, variants, self.route.get("years") or [],
+                top_n=top_n, encoder=encoder, facts=facts or None,
+            )
+            widened = grounded(widened_raw)
+            result = widened
+            raw_result = widened_raw
+            rescue_mode = "atomic_partial_widen"
+            if not required <= slots(widened):
+                schema_raw = build_shortlist(
+                    self.tables, variants, self.route.get("years") or [],
+                    top_n=top_n, encoder=encoder,
+                    min_score=self.rescue_min_score, facts=facts or None,
+                    schema_rescue=True,
+                )
+                schema = grounded(schema_raw)
+                raw_result = [*widened_raw, *schema_raw]
+                missing = required - slots(widened)
+                extras = [c for c in schema if c.fact_slot in missing]
+                seen = {(c.var, c.row, c.col) for c in widened}
+                merged = list(widened)
+                for candidate in extras:
+                    stable = (candidate.var, candidate.row, candidate.col)
+                    if stable not in seen and len(merged) < top_n:
+                        merged.append(candidate)
+                        seen.add(stable)
+                result = merged
+                rescue_mode = ("atomic_partial_schema" if required <= slots(result)
+                               else "atomic_semantic_incomplete")
+            self.shortlist_trace.update({
+                "rescue_applied": True,
+                "rescue_table_count": len(self.tables),
+                "rescue_min_score": self.rescue_min_score,
+                "rescue_mode": rescue_mode,
+            })
+        raw_present = slots(raw_result)
+        present = slots(result)
+        entity_guard = (self._atomic_trace.get("entity_guard") or {})
+        entity_ok = bool(entity_guard.get("ok", True))
+        planner_guard = (self._atomic_trace.get("planner_guard") or {})
+        planner_ok = bool(planner_guard.get("ok", True))
+        atomic_truncated = bool(self._atomic_trace.get("truncated"))
+        grounding_rejections = Counter(
+            str(getattr(candidate, "metric_grounding_reason", "unknown") or "unknown")
+            for candidate in raw_result
+            if not bool(getattr(candidate, "metric_grounded", False))
+        )
+        self.shortlist_trace.update({
+            "candidate_count": len(result),
+            "raw_candidate_count": len(raw_result),
+            "metric_grounding_rejections": dict(sorted(grounding_rejections.items())),
+            "atomic_slots": dict(self._atomic_trace),
+            "atomic_fact_slots_required": len(required),
+            "atomic_fact_slots_present": len(required & raw_present),
+            "atomic_fact_complete": bool(required and required <= raw_present),
+            "semantic_fact_slots_present": len(required & present),
+            "semantic_route_grounded": bool(entity_ok and planner_ok),
+            "semantic_fact_complete": bool(
+                required and entity_ok and planner_ok and not atomic_truncated
+                and required <= present
+            ),
+        })
+        self._shortlists[key] = result
+        return result
+
     def select_messages(self, encoder=None) -> list[dict]:
         """Selection mode: the model only picks shortlist rows + an operation."""
         plan = self.route.get("plan") or {}
@@ -219,6 +327,13 @@ class QuestionBundle:
                     self.question, self.route,
                     render_shortlist(self.shortlist(encoder, top_n=12)),
                     plan_block)}]
+
+    def select_v2_messages(self, encoder=None) -> list[dict]:
+        """Typed nested IR mode with named, provenance-bearing atomic facts."""
+        return build_select_v2_messages(
+            self.question, self.route, self.shortlist_v2(encoder, top_n=24),
+            atomic_facts=self.atomic_slots(),
+        )
 
     def prompt_messages(self, encoder=None) -> list[dict]:
         from ..retrieval.serialize import preview_for_prompt
@@ -290,7 +405,8 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
                 llm_target: str = "all", llm_mode: str = "code",
                 rescue_no_candidates: bool = False,
                 rescue_table_k: int = 20,
-                rescue_min_score: float = 28.0) -> None:
+                rescue_min_score: float = 28.0,
+                llm_ids: set[int] | None = None) -> None:
     """Crash-safe codegen.
 
     Order of operations (important on Kaggle where a session can die at any time):
@@ -389,6 +505,8 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
     #   empty - ONLY questions with no deterministic answer  (best value/hour)
     #   weak  - empty + rule answers flagged AMBIGUOUS / low confidence
     def _wanted(b) -> bool:
+        if llm_ids is not None and b.id not in llm_ids:
+            return False
         if rule_first and rule_conf.get(b.id, 0) >= 90:
             return False
         if llm_target == "empty":
@@ -415,7 +533,9 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
         part = llm_todo[ci * chunk:(ci + 1) * chunk]
         t0 = time.time()
         # keep the no-arg call path: test doubles implement prompt_messages()
-        if llm_mode == "select":
+        if llm_mode == "select_v2":
+            convs = [b.select_v2_messages(encoder) for b in part]
+        elif llm_mode == "select":
             convs = [b.select_messages(encoder) for b in part]
         else:
             convs = [(b.prompt_messages(encoder) if encoder is not None
@@ -436,12 +556,30 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
                 f"LLM returned {len(gens)} result groups for {len(part)} prompts"
             )
         debug_queue = []
-        if llm_mode == "select":
+        if llm_mode in {"select", "select_v2"}:
             trace_outcomes, trace_rejections = Counter(), Counter()
             for b, samples in zip(part, gens):
-                rec, trace = _selection_result(
-                    b, samples, encoder, return_trace=True,
-                )
+                if llm_mode == "select_v2":
+                    cands = b.shortlist_v2(encoder, top_n=24)
+                    decision, trace = evaluate_v2_samples(
+                        samples, cands, b.route, b.question,
+                        lambda query, bundle=b: _run_validated(bundle, query),
+                        atomic_facts=b.atomic_slots(),
+                    )
+                    rec = None
+                    if decision is not None:
+                        rec = _final(
+                            b, decision.answer, decision.query, "llm_select_v2",
+                        )
+                        rec["detail"] = (
+                            f"v2 root={decision.compiled.root_op} "
+                            f"refs={list(decision.compiled.referenced_indices)}"
+                        )
+                        rec["detail_conf"] = decision.confidence
+                else:
+                    rec, trace = _selection_result(
+                        b, samples, encoder, return_trace=True,
+                    )
                 trace["shortlist"] = dict(b.shortlist_trace)
                 trace_outcomes[trace.get("outcome", "unknown")] += 1
                 trace_rejections.update(trace.get("rejection_counts") or {})
