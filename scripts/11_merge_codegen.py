@@ -31,7 +31,8 @@ def _by_id(rows: list[dict], label: str) -> dict[int, dict]:
 
 def merge_codegen(base_rows: list[dict], candidate_rows: list[dict], *,
                   min_confidence: float = 90.0,
-                  replace_ok: bool = False) -> tuple[list[dict], list[int]]:
+                  replace_ok: bool = False,
+                  allow_ids: set[int] | None = None) -> tuple[list[dict], list[int]]:
     base = _by_id(base_rows, "base")
     candidates = _by_id(candidate_rows, "candidate")
     if set(base) != set(candidates):
@@ -49,6 +50,7 @@ def merge_codegen(base_rows: list[dict], candidate_rows: list[dict], *,
             and float(candidate.get("detail_conf", 0.0) or 0.0) >= min_confidence
             and not any(marker in detail for marker in REJECT_MARKERS)
             and (replace_ok or current.get("status") != "ok")
+            and (allow_ids is None or qid in allow_ids)
         )
         if not eligible:
             merged.append(current)
@@ -56,7 +58,10 @@ def merge_codegen(base_rows: list[dict], candidate_rows: list[dict], *,
 
         replacement = dict(candidate)
         original_source = str(candidate.get("source", "unknown"))
-        replacement["source"] = f"canonical_v2_blend:{original_source}"
+        replacement["source"] = (
+            original_source if original_source.startswith("canonical_v2_blend:")
+            else f"canonical_v2_blend:{original_source}"
+        )
         replacement["detail"] = (
             f"canonical-v2 safe fill over {current.get('source', 'unknown')}; "
             f"{detail}"
@@ -75,11 +80,17 @@ def main() -> None:
     parser.add_argument("--min-confidence", type=float, default=90.0)
     parser.add_argument("--replace-ok", action="store_true",
                         help="also replace successful base rows; off by default")
+    parser.add_argument("--allow-ids", default="",
+                        help="optional comma-separated audited id allowlist")
     args = parser.parse_args()
+
+    allow_ids = ({int(value) for value in args.allow_ids.split(",") if value.strip()}
+                 if args.allow_ids else None)
 
     merged, accepted = merge_codegen(
         read_jsonl(args.base), read_jsonl(args.candidate),
         min_confidence=args.min_confidence, replace_ok=args.replace_ok,
+        allow_ids=allow_ids,
     )
     write_jsonl(args.out, merged)
     print(f"merged {len(merged)} rows; accepted={len(accepted)} ids={accepted}")

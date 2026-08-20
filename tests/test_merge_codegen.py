@@ -43,3 +43,15 @@ def test_safe_merge_rejects_ambiguous_and_unit_warning_rows():
 
     assert accepted == []
     assert all(row["status"] == "failed" for row in merged)
+
+
+def test_allowlist_limits_an_explicit_audited_merge():
+    base = [_row(1, status="failed"), _row(2, status="failed")]
+    candidates = [_row(1, confidence=20), _row(2, confidence=20)]
+
+    merged, accepted = MODULE.merge_codegen(
+        base, candidates, min_confidence=0, allow_ids={2})
+
+    assert accepted == [2]
+    assert merged[0]["status"] == "failed"
+    assert merged[1]["source"] == "canonical_v2_blend:rule"

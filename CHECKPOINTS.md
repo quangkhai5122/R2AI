@@ -47,23 +47,29 @@ remain ignored by Git; the hashes above identify the exact local files.
 - Branch: `improve_baseline_kien`
 - Retrieval: `artifacts/retrieval_p2_canonical_v2_qualified_hybrid_w010.jsonl`
 - Rule codegen: `artifacts/codegen_rule_canonical_v2_w010_k15.jsonl`
-- Safe blend: `artifacts/codegen_result6_canonical_v2_safe20_w010.jsonl`
-- Submission: `artifacts/submission_p2_canonical_v2_safe20_w010/submission.zip`
+- Kaggle output: `kaggle/results-7/codegen_canonical_v2_sel7b.jsonl`
+- Audited blend: `artifacts/codegen_result7_canonical_v2_audited6_w010.jsonl`
+- Submission: `artifacts/submission_p2_canonical_v2_result7_audited6_w010/submission.zip`
 - Kaggle payload: `artifacts/kaggle-payload-canonical-v2-w010.zip`
 - Kaggle notebook: `r2ai-qwen2-5-coder-7b-canonical-v2-w010.ipynb`
 - Retrieval SHA-256: `c7fa88ad54294eb03881569126e24033e2ac73c8f111ae867110c1c44b03c28c`
-- Safe-blend codegen SHA-256: `88379883fe7933e14b948d7e6d02c9bf56f3c390e7c8b9061195bdf60462500b`
-- Submission SHA-256: `28a0ccd226461ba5e6cb22158c1504c902cb8fdfa8485b304bbaf7327953a091`
+- Kaggle-output SHA-256: `f2e03eb7aee290cf09d20f8aaa1ac5a04dbae7d15e090c5585ae8e95f0de2f96`
+- Audited-blend SHA-256: `ee1c189c5968f15c2abe8e98677296fc07fc745c87cf3ccf26cf65d7f2534314`
+- Submission SHA-256: `5fb8fb48a4bfa5e539baebf4e108bc8c7e8364966c43a9db25ff67a1fd0a7147`
 - Payload SHA-256: `e0f681a0de9978da6a7081dbd9b423633945ddf96441e2a353b6aa4924b7cb41`
 
 V2 registers 139 metrics and links 791/1,012 official questions (78.16%), up
 from 534/1,012 (52.77%). It adds structured qualifiers and exact row identity.
 On the 40-question synthetic validation set, rule execution rises from 0.700
-for canonical v1 to 0.725 for v2. The official safe blend preserves every
-successful 0.2806 checkpoint row and fills only 20 failed rows whose v2 rule
-confidence is at least 90 with no `AMBIGUOUS` or `UNIT-WARN` marker. All 1,012
-submission expressions replay locally; the source suite passes (`182 passed`).
+for canonical v1 to 0.725 for v2. Kaggle inference produced 868 executable
+rows, including 120 rows that failed in the 0.2806 checkpoint. A semantic audit
+found that confidence-only selection admitted many false positives on nested
+questions, so the earlier `safe20` artifact is deprecated and must not be
+submitted. The final conservative blend preserves the complete 0.2806
+checkpoint and adds only six table-verified answers: `589, 591, 635, 757, 830,
+838`. All 1,012 submission expressions replay locally; the source suite passes
+(`183 passed`).
 
 This is intentionally recorded as a candidate, not a leaderboard checkpoint.
-Replace this note with measured metrics only after the Kaggle v2 inference and
-official submission have completed.
+Replace this note with measured metrics only after the official submission has
+completed.
