@@ -3,14 +3,17 @@
 > Lệnh vận hành và artifact chuẩn nằm trong `RUNBOOK.md`. Nếu ví dụ lịch sử ở tài liệu
 > khác mâu thuẫn, luôn theo RUNBOOK.
 >
-> **Lượt hiện hành là P2.2 semantic-grounded v5, payload schema 8; chạy B=2 trước rồi dừng.**
-> Command đầy đủ: `RUNBOOK_P2_2_STRUCTURED_SELECTION_V2.md`.
+> **Lượt hiện hành là P2.4-silver + v5.3a/v5.3b CPU local; không cần chạy Kaggle.**
+> V5.2b đã nộp nhưng ANSWER/EXEC vẫn `.2451`, bằng v5.2a. Hai ZIP v5.3 và exact
+> hashes/commands nằm ở mục 10 `RUNBOOK.md` và mục 15 runbook P2.2.
 
 Pipeline hiện tại:
 **structured routing → BM25 → atomic metric-slot shortlist → Qwen2.5-Coder-14B chọn
-typed nested IR → deterministic compiler/semantic guard → fill-only hybrid → submission.zip**
+typed nested IR → deterministic compiler/semantic guard → fill-only hybrid →
+column-role/period/unit repair → signed-silver verifier → single-cell consensus/
+structural lookup rescue → submission.zip**
 
-Phần **CPU chạy local**, phần **GPU chạy Kaggle** (14B NF4/HF). Hai bên trao đổi qua
+Qwen đã chạy trên **Kaggle GPU**; overlay v5.3 hiện tại chỉ chạy **CPU local**. Hai bên trao đổi qua
 payload schema 8 có manifest/mask SHA-256, fuzzy-scorer contract và codegen JSONL có
 `run_signature`/checkpoint hoàn tất-attempt.
 
@@ -24,6 +27,11 @@ Local (CPU)                                Kaggle (GPU T4 x2)
                                            (Qwen2.5-Coder-14B + NF4/HF
                                             + typed IR + semantic guard)
 11_merge_codegen_hybrid.py ◄ download ◄──── codegen_p22{b,c}_sel14b.jsonl
+52_build_v52a_semantic_repair.py
+53_build_v52b_multi_operand_repair.py
+54_p24_auto_silver.py
+55_build_v53a_single_cell_consensus.py
+56_build_v53b_lookup_rescue.py
 05_build_submission.py
         │
         ▼
@@ -34,9 +42,7 @@ Local (CPU)                                Kaggle (GPU T4 x2)
 
 ```powershell
 cd D:\Python_Project\Hackathon\R2AI_2026
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 ## 1. Chạy pipeline local (CPU)

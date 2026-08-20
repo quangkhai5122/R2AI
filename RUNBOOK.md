@@ -3,11 +3,12 @@
 > **File này là nguồn sự thật duy nhất về LỆNH CHẠY.** Mỗi khi pipeline đổi,
 > ghi đè trực tiếp vào đây (đừng tạo file mới) để không bị lạc phiên bản.
 >
-> Cập nhật lần cuối: **2026-08-15 (semantic-grounded v5.1 đã build local)** — raw
-> checkpoint Kaggle B=2/C=4 đã hoàn tất. Compiler v5.1 sửa xung đột sticky-unit/bare-VND;
-> CPU replay chấp nhận đủ 6/6 và sửa ID 966 từ 3 thành 2. Final candidate là
-> `artifacts/submission_p22bc_semantic_v51/submission.zip`; chưa có leaderboard score.
-> Không chạy lại Kaggle cho v5.1.
+> Cập nhật lần cuối: **2026-08-20 (đã có leaderboard v5.3a/v5.3b)**.
+> V5.3a: TABLES_F2 `.4453`, DOCS_F2 `.8975`, ANSWER/EXEC `.2490`.
+> V5.3b: TABLES_F2 `.4443`, DOCS_F2 `.8975`, ANSWER/EXEC `.2470`.
+> So với frozen v5.2a `.2451`, hai ablation tương ứng khoảng +2 và +1 câu đúng ròng
+> trên 506 câu chấm. Hai tập sửa rời nhau; candidate hợp nhất v5.3c là bước kế tiếp.
+> Không chạy Kaggle: toàn bộ P2.4-silver/v5.3 là CPU local.
 
 ---
 
@@ -16,14 +17,13 @@
 | Thành phần | Phiên bản/giá trị đang dùng |
 |---|---|
 | `vifinqa` package | 0.2.0 |
-| Payload schema | **8** là provenance raw semantic-v5; staged payload hiện stale sau source v5.1 và chỉ rebuild nếu có GPU run mới |
+| Payload schema | **8** là provenance raw semantic-v5; staged payload stale so với source v5.3 và chỉ rebuild nếu có GPU run mới |
 | `TABLE_POS_MODE` | `line` (BTC xác nhận: vị trí = **số dòng** của `<table>`) |
 | `SUBMISSION_K` | 5 |
 | Retrieval control chuẩn | `artifacts/retrieval.jsonl`, SHA-256 `96b71c5b…` |
-| Candidate CPU tốt nhất | `artifacts/codegen_p21r_all_v3.jsonl` → `submission_p21r_all_v3` |
-| Điểm tốt nhất đã nộp | #19 all-types v3: TABLES_F2 .4439 / DOCS_F2 .8969 / ANSWER .2292 / EXEC .2292 |
-| Candidate chưa nộp | P2.2 B+C semantic v5.1: 6 fill-only, ZIP SHA-256 `58dd6948f1537ffe...` |
-| Thứ tự tiếp theo | nộp/đo v5.1 một lần → báo score → làm ablation deterministic unit/column cho ID 71/271; không chạy thêm Qwen |
+| Control tốt nhất đã nộp | P2.2 v5.3a: TABLES_F2 .4453 / DOCS_F2 .8975 / ANSWER .2490 / EXEC .2490 |
+| Leaderboard ablation mới nhất | v5.3b: TABLES_F2 .4443 / DOCS_F2 .8975 / ANSWER .2470 / EXEC .2470 |
+| Thứ tự tiếp theo | tạo v5.3c union đúng 5 repair của v5.3a+v5.3b; không mở threshold trước khi nộp control này |
 | Backend LLM Kaggle | `hf` (transformers). **vLLM không chạy trên T4** |
 | Fuzzy scorer | `difflib.SequenceMatcher`, contract version `1` |
 
@@ -561,6 +561,32 @@ Mọi script đã gọi `setup_stdout()` (UTF-8). Nếu vẫn lỗi: `chcp 65001
 | 17 | P2.1 Qwen 14B fact-aware, dynamic k | .4406 | .8937 | **.2115** | .2115 |
 | 18 | P2.1r year-only v3, 25 replay | .4426 | .8961 | **.2253** | .2253 |
 | 19 | P2.1r all-types v3, 40 replay | **.4439** | **.8969** | **.2292** | **.2292** |
+| 20 | P2.2 B+C semantic v5.1, 6 fill-only | **.4443** | **.8975** | **.2312** | **.2312** |
+| 21 | P2.2 v5.2a lookup repair, 13 signed-silver | **.4443** | **.8975** | **.2451** | **.2451** |
+| 22 | P2.2 v5.2b multi-operand signed-silver, 6 repair | **.4443** | **.8975** | **.2451** | **.2451** |
+
+| 23 | P2.2 v5.3a single-cell consensus, 3 repair | **.4453** | **.8975** | **.2490** | **.2490** |
+| 24 | P2.2 v5.3b structural-none lookup, 2 rescue | **.4443** | **.8975** | **.2470** | **.2470** |
+Submission #20 tăng ròng `.0020 = 1/506` câu đúng so với #19. Submission #21 tăng tiếp
+`.0139`, tương ứng khoảng **+7/506 câu đúng ròng**, trong khi toàn bộ retrieval metric giữ
+nguyên. Kết quả này xác nhận hướng sửa semantic deterministic có giá trị; không chứng minh
+mọi ID v5.2a đều đúng riêng lẻ. V5.2b mở rộng có kiểm soát sang đúng 6 multi-operand ID
+nhưng leaderboard hoàn toàn không đổi; không tiếp tục mở rộng generic multi-operand ở
+nhánh này.
+
+Submission #23 tăng ANSWER/EXEC từ `.2451` lên `.2490`. Với 506 câu chấm và cách làm tròn
+4 chữ số, kết quả khớp **126/506 so với 124/506**, tức khoảng **+2 câu đúng ròng** trong
+3 ID sửa. TABLES_F2 tăng `.0010` nhờ recall tăng `.0019`; DOCS_F2 giữ nguyên. Submission
+#24 tăng lên `.2470`, khớp **125/506**, tức khoảng **+1 câu đúng ròng** trong 2 ID rescue;
+toàn bộ retrieval metric của #24 giữ nguyên so với v5.2a.
+
+Vì #23 và #24 đều dùng cùng frozen v5.2a và thay hai tập ID rời nhau
+`[245,329,730]` và `[158,213]`, phép cộng row-level dự báo union năm repair đạt khoảng
+`127/506 = .2510`. Đây là dự báo, chưa phải score xác nhận; bước kế tiếp là build/nộp một
+v5.3c union exact-allowlist trước khi sang fact-slot table reranker. P2.4-silver và hai
+ablation runnable ở mục 10 bên dưới và mục 15 của
+`RUNBOOK_P2_2_STRUCTURED_SELECTION_V2.md`.
+
 
 **#18/#19 xác nhận P2.1r có giá trị thật trên leaderboard.** Với độ phân giải score phù
 hợp public split 506 câu, #17 → #18 tương ứng khoảng **+7 câu đúng ròng**; #18 → #19
@@ -774,7 +800,7 @@ trong `RUNBOOK_P2_2_STRUCTURED_SELECTION_V2.md`. Nhật ký thay đổi ở
 `P2_2_STRUCTURED_SELECTION_V2_IMPLEMENTATION.md`. Chỉ dùng leaderboard cho ablation đã
 freeze; không lặp threshold/prompt theo public score.
 
-## 7quinquies. P2.2 semantic-grounded v5 — CURRENT
+## 7quinquies. P2.2 semantic-grounded v5 — HISTORICAL GPU STAGES
 
 Schema 8 thay thế schema 7. Planner mở slot `(entity, period, metric, role)` và chỉ
 đưa candidate vào prompt khi label/code/column/date chứng minh trực tiếp slot đó. Route
@@ -847,3 +873,140 @@ Chỉ leaderboard mới là trọng tài về độ lớn.
 *"Trong nhóm HPG, HSG, MSR và NKG, doanh nghiệp có mức tăng lớn nhất từ 2023
 sang 2024 của tỷ lệ X"* = rank(growth(ratio)). Rule engine hiện chỉ giải một
 tầng. Bộ eval của tôi chỉ có ranking một tầng nên không lộ ra điều này.
+
+## 10. P2.4-silver tự động và hai submission v5.3 (CURRENT)
+
+### 10.1 Nguyên tắc và control
+
+- Môi trường local là `(base)`, không activate `.venv`; mọi lệnh dưới đây CPU-only.
+- Frozen primary cho **cả hai** ablation là
+  `artifacts/codegen_p22bc_semantic_v52a_overlay.jsonl`, SHA-256
+  `e339da82b8a49a3160427946d1f05ba59269c6f730e2ec4bf5d4e22864351ab4`,
+  run signature `dc34176abba043ff3a0b42f1e8c5861067c82ba165bf36c29f0a641eb33b69d0`.
+- Frozen retrieval SHA-256:
+  `96b71c5b31a193dcad969de6b1e5ac64ff38c36bfcd44c15e491c240f09d685a`.
+- Không xếp v5.3b lên v5.3a hoặc v5.2b. Hai ZIP phải độc lập để leaderboard attribution
+  chỉ gồm đúng 3 consensus repairs hoặc 2 structural-none rescues.
+
+### 10.2 P2.4-silver tự động
+
+Bundle canonical lấy một fact signed-value đại diện trên mỗi cặp report liền kề và tách
+ticker 70/15/15; expected value không được truyền vào resolver. Build/output là
+exclusive-create, không chạy lại lên cùng đường dẫn:
+
+```powershell
+python scripts/54_p24_auto_silver.py build `
+  --store-dir artifacts/store `
+  --out-dir artifacts/p24_silver_auto_v53 `
+  --seed 2453 --max-per-report-pair 1 --max-tickers-per-split 8
+
+python scripts/54_p24_auto_silver.py evaluate `
+  --split artifacts/p24_silver_auto_v53/p24_silver_tune.jsonl `
+  --store-dir artifacts/store `
+  --out artifacts/p24_silver_auto_v53/eval_tune_v53.json `
+  --expect-split-sha256 8218ee4cda90f026f8a7854cf1ba441165fed5ae4d41879a9b69b5dff6df1ec4
+
+# Chỉ mở locked sau khi tune accepted_answer_precision >= .95 và code/threshold freeze.
+python scripts/54_p24_auto_silver.py evaluate `
+  --split artifacts/p24_silver_auto_v53/p24_silver_locked.jsonl `
+  --store-dir artifacts/store `
+  --out artifacts/p24_silver_auto_v53/eval_locked_v53.json `
+  --expect-split-sha256 98c489ce5779c42b5b290949522367fa2f377d65585e777e5ad25f44672006cb
+```
+
+Gate đã đo:
+
+- fingerprint bundle `15be1d901009ee769883552f4e4132af2d4c13da55dcc8b2e6610715923eabb5`;
+- 377 facts / 377 report-pairs: train 118, tune 123, locked 136; ticker disjoint;
+- tune: coverage/cell/answer `.8617886`, accepted-answer precision `1.0`;
+- locked: coverage/cell/answer `.9191176`, accepted-answer precision `1.0`;
+- `artifacts/p24_silver_auto/` là stress bundle 4.482 facts chưa evaluate hoàn tất, không
+  phải canonical gate và không được trộn metric với bundle report-diverse ở trên.
+
+P2.4-silver chỉ kiểm cell/period/unit cho lookup một ô. Nó không phải gold của 1.012 câu
+và không ước lượng trực tiếp leaderboard accuracy.
+
+### 10.3 V5.3a — single-cell consensus repair (submission thứ nhất)
+
+Preflight phải trả đúng `[245,329,730]`; ID 91 là false positive đã bị metric-token gate
+loại vì `nguyên giá` không đồng nhất với `giá vốn`.
+
+```powershell
+python scripts/55_build_v53a_single_cell_consensus.py `
+  --primary artifacts/codegen_p22bc_semantic_v52a_overlay.jsonl `
+  --retrieval artifacts/retrieval.jsonl --store-dir artifacts/store --preflight
+
+python scripts/55_build_v53a_single_cell_consensus.py `
+  --primary artifacts/codegen_p22bc_semantic_v52a_overlay.jsonl `
+  --retrieval artifacts/retrieval.jsonl --store-dir artifacts/store `
+  --out artifacts/codegen_p22bc_semantic_v53a_overlay.jsonl `
+  --audit artifacts/codegen_p22bc_semantic_v53a_overlay.audit.json `
+  --expect-selected-ids 245,329,730 `
+  --expect-primary-signature dc34176abba043ff3a0b42f1e8c5861067c82ba165bf36c29f0a641eb33b69d0 `
+  --expect-primary-sha256 e339da82b8a49a3160427946d1f05ba59269c6f730e2ec4bf5d4e22864351ab4 `
+  --expect-retrieval-sha256 96b71c5b31a193dcad969de6b1e5ac64ff38c36bfcd44c15e491c240f09d685a
+
+python scripts/05_build_submission.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/codegen_p22bc_semantic_v53a_overlay.jsonl `
+  --store-dir artifacts/store `
+  --out-dir artifacts/submission_p22bc_semantic_v53a --sub-k 5 --pos-mode line
+```
+
+Artifact đã khóa:
+
+- codegen SHA-256 `77906d6c4dfd3adf88e7d882d45f34d6a2040da934f275d4b3ae3c2c5c44cee1`;
+- run signature `439782fd55542e2269a4415a2a6c970accffd1f3a06bebaee5c0742adbe9c5b7`;
+- ZIP SHA-256 `c538f805411a7cc540f3e38d3712b8cdb0c83d315748e583f7a37690de953e88`.
+
+### 10.4 V5.3b — structural-none lookup rescue (submission thứ hai)
+
+Universe là đúng 30 route-lookup structural-none. Chỉ ID 158 và 213 qua guard; 17/30
+thực chất đa-fact, 10 thiếu evidence đủ mạnh, 1 thiếu exact report. Không ép đủ 30.
+
+```powershell
+python scripts/56_build_v53b_lookup_rescue.py `
+  --primary artifacts/codegen_p22bc_semantic_v52a_overlay.jsonl `
+  --retrieval artifacts/retrieval.jsonl --store-dir artifacts/store --preflight
+
+python scripts/56_build_v53b_lookup_rescue.py `
+  --primary artifacts/codegen_p22bc_semantic_v52a_overlay.jsonl `
+  --retrieval artifacts/retrieval.jsonl --store-dir artifacts/store `
+  --out artifacts/codegen_p22bc_semantic_v53b_lookup_rescue.jsonl `
+  --audit artifacts/codegen_p22bc_semantic_v53b_lookup_rescue.audit.json `
+  --expect-selected-ids 158,213 `
+  --expect-target-ids 37,125,128,156,158,213,233,285,336,362,365,421,424,427,430,431,435,456,583,599,625,641,657,663,750,783,863,887,909,924 `
+  --expect-primary-signature dc34176abba043ff3a0b42f1e8c5861067c82ba165bf36c29f0a641eb33b69d0 `
+  --expect-primary-sha256 e339da82b8a49a3160427946d1f05ba59269c6f730e2ec4bf5d4e22864351ab4 `
+  --expect-retrieval-sha256 96b71c5b31a193dcad969de6b1e5ac64ff38c36bfcd44c15e491c240f09d685a
+
+python scripts/05_build_submission.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/codegen_p22bc_semantic_v53b_lookup_rescue.jsonl `
+  --store-dir artifacts/store `
+  --out-dir artifacts/submission_p22bc_semantic_v53b_lookup_rescue `
+  --sub-k 5 --pos-mode line
+```
+
+Artifact đã khóa:
+
+- codegen SHA-256 `18a8adebd87c8e5b947f198cf27073aa05f5ee4cc36d3c02b37a7b29c872cf00`;
+- run signature `4e794f7e4accae4e48ce8ff44e7ec5abdc700b2f1df00e748166bb58228c85e3`;
+- ZIP SHA-256 `dbca0c56f825ed4806389f19326d7e986f0d88ffb6e3e8e7c2efc875e2317cc8`.
+
+### 10.5 Gate cuối và thứ tự nộp
+
+- Full suite: `301 passed`; focused P2.4/v5.3/v5.2: `18 passed`.
+- Mỗi codegen có 1.012 ID unique/finite, đúng một run signature; v5.3a chỉ đổi
+  `[245,329,730]`, v5.3b chỉ đổi `[158,213]`.
+- Mỗi ZIP có một `results.json` + 1.575 CSV; mọi query compile/replay; question/ID khớp
+  frozen retrieval. Structural-none: v5.3a giữ 214, v5.3b giảm 214 → 212.
+- Trình tự frozen đã hoàn tất đúng thiết kế, không tune giữa hai lượt.
+- V5.3a đạt TABLES_F2 `.4453`, DOCS_F2 `.8975`, ANSWER/EXEC `.2490`: xấp xỉ +2/506
+  câu đúng ròng; ba repair không thể được định danh đúng/sai riêng lẻ từ score tổng.
+- V5.3b đạt TABLES_F2 `.4443`, DOCS_F2 `.8975`, ANSWER/EXEC `.2470`: xấp xỉ +1/506
+  câu đúng ròng; score tổng không cho biết ID 158 hay 213 là câu được cứu.
+- Vì hai tập ID rời nhau trên cùng primary, union exact năm repair có expected
+  ANSWER/EXEC `127/506 = .2510`. Đây là suy luận cộng tính theo row, cần leaderboard xác nhận.
+- Bước kế tiếp: tạo v5.3c union, audit no-drift và nộp một lần. Chỉ sau control đó mới mở
+  fact-slot table reranker; không thay threshold/allowlist của hai repair đã xác nhận.

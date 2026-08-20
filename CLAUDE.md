@@ -8,24 +8,52 @@ Luật thi: `instructions/*.md`.
 phải ghi đè vào đó (không tạo file hướng dẫn mới). `README.md` chỉ là tổng quan.
 Thay đổi mới nhất: `P2_2_STRUCTURED_SELECTION_V2_IMPLEMENTATION.md`; command runnable ở
 `RUNBOOK_P2_2_STRUCTURED_SELECTION_V2.md` và `kaggle/vifinqa-codegen-p22.ipynb`.
-## SNAPSHOT HIỆN TẠI — 2026-08-15
+## SNAPSHOT HIỆN TẠI — 2026-08-20
 
-- Frozen control #19 giữ nguyên: TABLES_F2 `.4439`, DOCS_F2 `.8969`, ANSWER/EXEC
-  `.2292`; 220 structural-none.
-- Raw P2.2 semantic-v5 đã chạy xong trên Kaggle: B IDs `[855,966]`, C IDs
-  `[102,183,355,591]`; mỗi ID có 2 saved responses đầy đủ. Không chạy lại GPU.
-- Compiler v5.1 sửa sticky-unit/bare-VND bằng effective unit provenance và fail-closed
-  guard. ID 966 được sửa từ 3 thành 2; B replay 2/2, C replay 4/4.
-- Mask hiện hành: B `[855,966]` (2 câu, no-rescue); C `[102,183,355,591]` (4 câu,
-  rescue). Final hybrid chỉ thay đúng sáu ID này; 214 structural-none còn lại.
-- Candidate chưa nộp:
-  `artifacts/submission_p22bc_semantic_v51/submission.zip`, SHA-256
-  `58dd6948f1537ffed541dd52b0a3467375b025e72ff46f8c13a46ca0910577b2`.
-- Gate local: py_compile pass, full suite 283/283; ZIP có 1 results + 1,575 CSV.
-- Payload schema 8 cũ là provenance của raw run và hiện stale so với source v5.1.
-  Nếu sau này chạy GPU mới phải rebuild/reverify payload; v5.1 hiện tại không cần GPU.
-- Lượt tiếp theo: nộp candidate v5.1 một lần và báo score. ID 71/271 chỉ được sửa trong
-  deterministic overlay ablation riêng, không trộn âm thầm vào candidate sáu ID.
+- Best submitted hiện là v5.3a: TABLES_F2 `.4453`, DOCS_F2 `.8975`,
+  ANSWER/EXEC `.2490`, tương ứng khoảng +2/506 câu đúng ròng so với v5.2a.
+- V5.3b đạt TABLES_F2 `.4443`, DOCS_F2 `.8975`, ANSWER/EXEC `.2470`, tương ứng
+  khoảng +1/506; retrieval metric giữ nguyên so với v5.2a.
+- Hai tập ID rời nhau trên cùng frozen primary; union exact năm repair dự báo `.2510`.
+- P2.4-silver tự động đã được dựng từ các ô lặp ở hai báo cáo kề nhau, tách ticker
+  train/tune/locked. Bundle canonical có fingerprint
+  `15be1d901009ee769883552f4e4132af2d4c13da55dcc8b2e6610715923eabb5`;
+  tune 123 fact đạt coverage/accuracy `.8618`, locked 136 fact đạt `.9191`, accepted
+  precision `1.0`. Đây là verifier silver cho cell/period/unit, không phải gold ẩn.
+- V5.3a single-cell consensus sửa đúng ba status-ok lookup ID `[245,329,730]`.
+  Codegen SHA `77906d6c4dfd3adf88e7d882d45f34d6a2040da934f275d4b3ae3c2c5c44cee1`,
+  run signature `439782fd55542e2269a4415a2a6c970accffd1f3a06bebaee5c0742adbe9c5b7`,
+  submission ZIP SHA `c538f805411a7cc540f3e38d3712b8cdb0c83d315748e583f7a37690de953e88`.
+- V5.3b khóa target ở đúng 30 structural-none lookup nhưng chỉ hai ID `[158,213]`
+  qua guard; 214 structural-none giảm còn 212. Codegen SHA
+  `18a8adebd87c8e5b947f198cf27073aa05f5ee4cc36d3c02b37a7b29c872cf00`,
+  run signature `4e794f7e4accae4e48ce8ff44e7ec5abdc700b2f1df00e748166bb58228c85e3`,
+  submission ZIP SHA `dbca0c56f825ed4806389f19326d7e986f0d88ffb6e3e8e7c2efc875e2317cc8`.
+- Cả hai candidate có 1,012 record, một signature, finite answers, compile/replay đủ;
+  mỗi ZIP có 1 `results.json` + 1,575 CSV. Full suite cuối: **301 passed**.
+- Thứ tự ablation đã hoàn tất không tune giữa hai lượt. Bước kế tiếp là v5.3c union
+  exact IDs `[158,213,245,329,730]`; chỉ sau đó mới mở fact-slot table reranker.
+  Lệnh canonical và leaderboard history nằm trong `RUNBOOK.md`.
+
+## SNAPSHOT LỊCH SỬ — 2026-08-16 (v5.2b)
+
+- Best submitted v5.2a: TABLES_F2 `.4443`, DOCS_F2 `.8975`, ANSWER/EXEC `.2451`;
+  tăng `.0139`, khoảng +7/506 câu đúng ròng so với v5.1; còn 214 structural-none.
+- V5.2b CPU overlay chỉ sửa 6 multi-operand ID có signed silver support độc lập:
+  `[605,718,721,771,827,927]`. Ops được khóa ở difference/growth_pct/ratio/average;
+  exact fact-leaf assignment, target period, metric, unit và stable cell phải qua guard.
+- Answer/support-count theo operand: `-20.73/4,3`, `-39.92/1,2`, `1.40/2,3`,
+  `30436754/1,1`, `602.38/1,1,2,1`, `37.25/2,1,1,2,2`.
+- IDs 665/667/762 bị loại fail-closed vì ít nhất một operand thiếu signed support.
+- Codegen candidate: `artifacts/codegen_p22bc_semantic_v52b_overlay.jsonl`,
+  SHA-256 `51287d094488edac7b376bf6648dac289218fd1ffd69d28f9e097a1290580f4b`;
+  run signature `98a638a1d0b5b58f763195578799fee2199e5c54149c28c740a21353faff242f`.
+- File cần nộp: `artifacts/submission_p22bc_semantic_v52b/submission.zip`,
+  SHA-256 `90a766fa5860d6efc1a07afaf5967de4ca28a2ec963d993e4b018265b5401209`.
+- Audit: 1,012 records; đúng 6 thay đổi, 1,006 semantic-unchanged, 214 structural-none;
+  ZIP có 1 results + 1,575 CSV; full suite 294/294.
+- Payload schema 8 là provenance raw run và stale so với source v5.2b; không rebuild
+  vì lượt này không cần GPU. Tiếp theo chỉ nộp candidate v5.2b một lần và báo đủ score.
 
 
 ## SNAPSHOT LỊCH SỬ — 2026-08-13 (schema 5/6, RETIRED)

@@ -1,8 +1,9 @@
 # P2.2 Structured Selection v2 — implementation log
 
-Ngày bắt đầu: 2026-08-11; cập nhật gần nhất: 2026-08-15. OOM schema cũ đã retire;
-raw semantic-v5 B=2/C=4 đã chạy xong trên Kaggle và được replay bằng compiler v5.1
-ở local. P2.2 vẫn chưa có leaderboard score.
+Ngày bắt đầu: 2026-08-11; cập nhật gần nhất: 2026-08-16. OOM schema cũ đã retire.
+P2.2 B+C v5.1 đã nộp và đạt `ANSWER_ACCURACY = EXECUTION_ACCURACY = 0.2312`.
+V5.2a đã đạt leaderboard `.2451`. V5.2b là CPU overlay 6 multi-operand repair có
+signed silver support độc lập cho mọi toán hạng, đã dựng/audit và chờ leaderboard.
 
 ## Thay đổi production
 
@@ -303,3 +304,190 @@ Sáu kết quả là evidence-backed local candidates, chưa phải gold và ch�
 score. ID 71/271 có dấu hiệu unit/column lỗi trong output status=ok của #19 nhưng không
 được trộn vào candidate v5.1; chúng cần deterministic overlay riêng với exact allowlist,
 question/cell hash và submission ablation riêng.
+
+## Cập nhật 2026-08-16 — v5.2a column-role + period + unit repair
+
+### Động cơ và phạm vi
+
+- Leaderboard v5.1: TABLES_F2 `.4443`, DOCS_F2 `.8975`, ANSWER/EXEC `.2312`;
+  mức tăng so với all-types v3 là khoảng một câu đúng trên tập chấm ẩn.
+- V5.2a không gọi lại Qwen và không thay 214 structural-none. Nó chỉ quét các record
+  `status=ok`, route `lookup`, output `number`, đúng một fact/một DataFrame.
+- Repair chỉ được kích hoạt khi ô cũ là cột note/code hoặc effective-unit policy thay đổi.
+  Cột đích phải là duy nhất cho target period, hàng metric phải khớp và câu trả lời phải
+  có silver support cùng dấu sau khi chuẩn hóa unit. Đây là verifier bảo thủ, không phải gold.
+
+### Code và guard
+
+- `vifinqa/codegen/semantic_repair.py`: policy
+  `v52a_column_period_unit_silver_v1`, column-role/period resolver, effective-unit
+  normalization, signed silver verifier, exact-cell query và overlay fail-closed.
+- `scripts/52_build_v52a_semantic_repair.py`: CLI bắt buộc exact ID allowlist,
+  primary signature/SHA-256 và retrieval SHA-256; output/audit là exclusive-create.
+- `tests/test_semantic_repair_v52a.py`: hồi quy role, parser, note+unit repair,
+  opposite-sign rejection, ID guard và overwrite refusal.
+
+### Kết quả deterministic trên frozen control
+
+- Đã chọn đúng 13 ID:
+  `61,71,101,139,176,201,255,271,278,289,307,310,337`.
+- Answers/support-count lần lượt:
+  `1997.4/2`, `2998.87/2`, `1.33/4`, `3176645956/1`, `0.9/2`,
+  `3.98/1`, `17.66/2`, `46.14/2`, `1.74/3`, `271.51/1`,
+  `1.08/3`, `2.26/1`, `81.57/3`.
+- ID 67 bị loại đúng chủ đích: candidate `-890.93` nhưng silver chỉ hỗ trợ
+  `+890.93`; verifier không cho phép bỏ qua dấu.
+- Output giữ nguyên semantic cho 999/1,012 record; 13/13 thay đổi trùng exact allowlist;
+  một run signature, mọi answer hữu hạn, 214 structural-none giữ nguyên.
+
+### Artifact và xác minh
+
+- Codegen: `artifacts/codegen_p22bc_semantic_v52a_overlay.jsonl`,
+  SHA-256 `e339da82b8a49a3160427946d1f05ba59269c6f730e2ec4bf5d4e22864351ab4`.
+- Run signature:
+  `dc34176abba043ff3a0b42f1e8c5861067c82ba165bf36c29f0a641eb33b69d0`.
+- Submission: `artifacts/submission_p22bc_semantic_v52a/submission.zip`,
+  SHA-256 `d679eda29919fba677ec3eadb7a68fcece0142d97696d3830a89175347c5b8c7`.
+
+## Cập nhật 2026-08-16 — v5.2b multi-operand signed-silver repair
+
+### Động cơ và phạm vi
+
+- V5.2a đã đạt TABLES_F2 `.4443`, DOCS_F2 `.8975`, ANSWER/EXEC `.2451`;
+  tăng `.0139`, khoảng +7/506 câu đúng ròng so với v5.1, trong khi retrieval metrics
+  không đổi. Đây là bằng chứng leaderboard cho hướng deterministic semantic repair.
+- V5.2b vẫn là CPU-only overlay, dùng frozen v5.2a làm primary, không gọi Qwen và không
+  thay 214 structural-none.
+- Phạm vi chỉ gồm historical `difference`, `growth_pct`, `ratio`, `average`;
+  không mở nested/filter/ranking hoặc generic AST rewrite.
+
+### Code và guard
+
+- `vifinqa/codegen/semantic_repair_v52b.py`: strict AST recognizer, exact fact-to-leaf
+  assignment, period/metric/unit resolution, signed silver verifier cho từng operand,
+  duplicate-cell guard và formula registry cố định.
+- `scripts/53_build_v52b_multi_operand_repair.py`: read-only `--preflight`; build
+  bắt exact allowlist, primary signature/SHA, retrieval SHA và exclusive-create output.
+- `tests/test_semantic_repair_v52b.py`: khóa AST shape, growth year ordering,
+  signed formula semantics, independent support cho mọi toán hạng, opposite-sign reject
+  và overwrite refusal.
+- Growth luôn sắp `(end, base)` theo năm giảm dần. Ratio giữ dấu theo
+  `numerator/denominator*100`; không áp dụng `abs` hậu nghiệm.
+
+### Kết quả deterministic trên frozen v5.2a
+
+- Preflight chấp nhận đúng 6 ID: `605,718,721,771,827,927`.
+- Answer mới: `-20.73`, `-39.92`, `1.40`, `30436754.00`, `602.38`,
+  `37.25`.
+- Silver support count theo operand:
+  `4/3`, `1/2`, `2/3`, `1/1`, `1/1/2/1`, `2/1/1/2/2`.
+- Ba triggered proposal 665/667/762 bị loại vì ít nhất một toán hạng không có signed
+  support. Các failure khác fail-closed, không được đưa vào allowlist.
+- Output giữ nguyên semantic cho 1,006/1,012 record; đúng 6 thay đổi; 214
+  structural-none giữ nguyên.
+
+### Artifact và xác minh
+
+- Codegen: `artifacts/codegen_p22bc_semantic_v52b_overlay.jsonl`,
+  SHA-256 `51287d094488edac7b376bf6648dac289218fd1ffd69d28f9e097a1290580f4b`.
+- Run signature:
+  `98a638a1d0b5b58f763195578799fee2199e5c54149c28c740a21353faff242f`.
+- Submission: `artifacts/submission_p22bc_semantic_v52b/submission.zip`,
+  SHA-256 `90a766fa5860d6efc1a07afaf5967de4ca28a2ec963d993e4b018265b5401209`.
+- Audit: 1,012 unique/finite, một signature; builder compile/replay đủ 1,012 query;
+  ZIP có 1 results + 1,575 CSV; 6 canonicalized query AST-equivalent và answer khớp.
+- Focused v5.2a+v5.2b: 11 passed; full suite cuối: **294 passed**.
+
+## Cập nhật 2026-08-20 — P2.4-silver tự động và v5.3
+
+### Kết quả v5.2b và quyết định thiết kế
+
+- Submission v5.2b giữ nguyên TABLES_F2 `.4443`, DOCS_F2 `.8975`, ANSWER/EXEC
+  `.2451`, bằng đúng v5.2a. Vì vậy multi-operand signed-silver overlay chưa cho thấy lợi ích
+  leaderboard; v5.3 quay về các thay đổi single-cell có bằng chứng độc lập và ablation hẹp.
+- Frozen primary của cả hai lượt là
+  `artifacts/codegen_p22bc_semantic_v52a_overlay.jsonl`, SHA-256
+  `e339da82b8a49a3160427946d1f05ba59269c6f730e2ec4bf5d4e22864351ab4`.
+
+### P2.4-silver tự động
+
+- `vifinqa/devset/p24_silver.py` và `scripts/54_p24_auto_silver.py` tạo fact lookup
+  từ cùng metric/period xuất hiện ở hai báo cáo kề nhau, chuẩn hóa unit rồi tách ticker
+  disjoint thành train/tune/locked. Bundle/output dùng exclusive-create và manifest có hash.
+- Bundle canonical `artifacts/p24_silver_auto_v53` có 377 fact từ 377 report-pair,
+  8 ticker mỗi split, fingerprint
+  `15be1d901009ee769883552f4e4132af2d4c13da55dcc8b2e6610715923eabb5`.
+- Tune: 123 fact, coverage/cell/answer accuracy `.8617886178861789`, accepted-answer
+  precision `1.0`. Locked: 136 fact, các metric tương ứng `.9191176470588235`, precision
+  `1.0`. Các số này đo resolver cell/period/unit trên silver lặp, không phải accuracy trên
+  1,012 câu và không được diễn giải như gold ẩn.
+- Bundle stress cũ `artifacts/p24_silver_auto` có 4,482 fact nhưng lượt evaluate bị dừng
+  vì lặp nhiều report; không dùng nó làm bundle canonical và không báo metric từ bundle đó.
+
+### V5.3a — single-cell consensus repair
+
+- `vifinqa/codegen/single_cell_consensus.py` và
+  `scripts/55_build_v53a_single_cell_consensus.py` chỉ xét status-ok lookup một fact,
+  yêu cầu primary đáng ngờ, metric identity chặt, target period/unit rõ và support độc lập
+  cùng dấu ở same/next report. Exact query/cell và toàn bộ provenance được ghi vào audit.
+- Exact allowlist là `[245,329,730]`; ID 91 bị loại sau metric-identity guard vì câu hỏi
+  “nguyên giá BĐS đầu tư” không đồng nhất với hàng “giá vốn cho thuê BĐS”.
+- Codegen `artifacts/codegen_p22bc_semantic_v53a_overlay.jsonl`, SHA-256
+  `77906d6c4dfd3adf88e7d882d45f34d6a2040da934f275d4b3ae3c2c5c44cee1`, run signature
+  `439782fd55542e2269a4415a2a6c970accffd1f3a06bebaee5c0742adbe9c5b7`.
+- Submission ZIP `artifacts/submission_p22bc_semantic_v53a/submission.zip`, SHA-256
+  `c538f805411a7cc540f3e38d3712b8cdb0c83d315748e583f7a37690de953e88`.
+
+### V5.3b — structural-none lookup rescue
+
+- `scripts/56_build_v53b_lookup_rescue.py` khóa đúng 30 structural-none lookup ID và
+  fail-closed. Chỉ ID `[158,213]` qua guard; 17/30 là multi-fact, 10 thiếu candidate được
+  support, 1 thiếu exact report. Số structural-none giảm 214 xuống 212.
+- ID 158 dùng direct-exact ownership entity/percentage-column; ID 213 dùng consensus
+  period trước ở next report. Hai cơ chế được phân biệt bằng `evidence_mode` trong audit.
+- Codegen `artifacts/codegen_p22bc_semantic_v53b_lookup_rescue.jsonl`, SHA-256
+  `18a8adebd87c8e5b947f198cf27073aa05f5ee4cc36d3c02b37a7b29c872cf00`, run signature
+  `4e794f7e4accae4e48ce8ff44e7ec5abdc700b2f1df00e748166bb58228c85e3`.
+- Submission ZIP `artifacts/submission_p22bc_semantic_v53b_lookup_rescue/submission.zip`,
+  SHA-256 `dbca0c56f825ed4806389f19326d7e986f0d88ffb6e3e8e7c2efc875e2317cc8`.
+
+### Gate cuối
+
+- Focused v5.2a/v5.2b/P2.4/v5.3: 18 passed; full suite: **301 passed**.
+- Mỗi codegen có 1,012 ID duy nhất, một run signature và finite answers. Diff semantic
+  đúng exact allowlist (3 cho v5.3a, 2 cho v5.3b); mọi row khác giữ nguyên.
+- Mỗi submission có 1 `results.json` + 1,575 CSV; embedded results khớp file trên đĩa,
+  mọi query compile/replay và answer khớp. Thứ tự leaderboard được freeze: v5.3a trước,
+  sau đó v5.3b; báo đủ retrieval/answer/execution metrics cho từng lượt.
+
+## Cập nhật 2026-08-20 — leaderboard v5.3a/v5.3b
+
+### Kết quả đã xác nhận
+
+- V5.3a: TABLES_F2 `.4453`, DOCS_F2 `.8975`, TABLES precision/recall/MRR5
+  `.2770/.6342/.5875`, DOCS precision/recall/MRR5 `.9488/.8949/.9654`,
+  ANSWER/EXEC `.2490`.
+- V5.3b: TABLES_F2 `.4443`, DOCS_F2 `.8975`, TABLES precision/recall/MRR5
+  `.2766/.6323/.5875`, DOCS precision/recall/MRR5 `.9488/.8949/.9654`,
+  ANSWER/EXEC `.2470`.
+- Frozen v5.2a là ANSWER/EXEC `.2451`. Trên 506 câu chấm, các score làm tròn khớp
+  124/506, 126/506 và 125/506; vì vậy v5.3a tăng khoảng hai câu đúng ròng, v5.3b
+  tăng khoảng một câu đúng ròng.
+
+### Diễn giải và giới hạn
+
+- V5.3a thay ba ID `[245,329,730]` nhưng score tổng chỉ cho biết tổng transition accuracy
+  là +2; không thể kết luận ID nào đúng nếu không có gold riêng. TABLES_F2/recall tăng cho
+  thấy nhánh này đồng thời cải thiện evidence ở tập chấm, nhưng không định danh row.
+- V5.3b thay `[158,213]` và tăng một câu đúng ròng; retrieval metric giữ nguyên. Không thể
+  suy ra 158 hay 213 là câu đúng, hoặc câu còn lại nằm ngoài 506 câu chấm.
+- Hai overlay dùng cùng frozen v5.2a và tập ID rời nhau. Với metric accuracy cộng theo row,
+  union exact năm repair có dự báo `127/506 = .250988...`, hiển thị `.2510`. Dự báo này
+  phụ thuộc audit no-drift đã có nhưng vẫn cần một submission union để xác nhận.
+
+### Quyết định tiếp theo
+
+Tạo v5.3c bằng cách ghép nguyên vẹn ba record từ artifact v5.3a và hai record từ artifact
+v5.3b lên frozen v5.2a. Không chạy lại resolver, không mở threshold và không dùng score để
+chọn bớt ID. Audit phải chứng minh chỉ `[158,213,245,329,730]` thay đổi; sau khi nộp control
+union này mới chuyển sang fact-slot table reranker.

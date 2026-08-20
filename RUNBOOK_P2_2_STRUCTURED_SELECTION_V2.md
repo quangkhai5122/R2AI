@@ -1,14 +1,14 @@
 # RUNBOOK P2.2 — Structured Selection v2
 
-> **CURRENT (2026-08-15): dùng mục 12, v5.1 đã replay/build hoàn tất trên local.**
-> Không chạy lại Kaggle: raw checkpoint B=2 và C=4 đã đủ. Các mục 2–10 là lịch sử
-> schema 5/6/7; mục 11 là quy trình sinh raw semantic-v5 đã hoàn thành. Mọi lệnh local
-> hiện hành dùng môi trường `(base)`, không activate `.venv`.
+> **CURRENT (2026-08-20): v5.3a/v5.3b đã có leaderboard; xem mục 15.**
+> V5.3a đạt ANSWER/EXEC `.2490` (+~2/506); v5.3b đạt `.2470` (+~1/506) so với
+> frozen v5.2a `.2451`. Bước kế tiếp là union exact năm repair v5.3c; không chạy Kaggle.
+> Mọi lệnh local hiện hành dùng môi trường `(base)`, không activate `.venv`.
 
-
-Tài liệu này là hướng dẫn runnable cho P2.2. Control bất biến là submission #19
-`artifacts/codegen_p21r_all_v3.jsonl` (ANSWER/EXEC `0.2292`). P2.2 chỉ được phép
-điền các `structural-none`; không chạy lại hay ghi đè 792 output đang thành công.
+Tài liệu này là hướng dẫn runnable cho P2.2. Các stage Qwen B/C dùng frozen #19 và chỉ
+điền `structural-none`. Các overlay v5.2a/v5.2b/v5.3 là ablation CPU riêng: chỉ thay
+exact allowlist có signed evidence hoặc direct-exact semantic proof và không ghi đè
+artifact.
 
 ## 1. Thiết kế đã khóa
 
@@ -560,7 +560,7 @@ Bước code trước C:
 3. prompt/IR phải giảm việc model lặp toàn bộ fact envelope và phải ghi riêng dấu hiệu
    generation chạm `max_new_tokens`;
 
-## 11. Semantic-grounded v5 / payload schema 8 — CURRENT
+## 11. Semantic-grounded v5 / payload schema 8 — HISTORICAL GPU STAGE
 
 Mục này thay thế toàn bộ lệnh GPU ở mục 2–10. Control vẫn là
 `artifacts/codegen_p21r_all_v3.jsonl` (#19, ANSWER/EXEC `0.2292`); P2.2 chỉ được
@@ -738,7 +738,7 @@ B=2/C=4 và prompt compact làm giảm mạnh áp lực GPU, nhưng vẫn giữ 
 `max-input-tokens=6000`, `max-tokens=512`, `n=2`. Resume chỉ hợp lệ khi exact
 run signature và completion marker khớp. Không đổi batch/token/mask/flags trong cùng
 output. Nếu vẫn OOM ở batch 1, download checkpoint + log và dùng output mới sau khi
-## 12. Semantic-grounded v5.1 terminal-VND repair — CURRENT
+## 12. Semantic-grounded v5.1 terminal-VND repair — SUBMITTED HISTORY
 
 ### 12.1. Kết luận vận hành
 
@@ -815,12 +815,289 @@ output hoặc di chuyển artifact hiện tại.
 
 ### 12.5. Quyết định tiếp theo
 
-Candidate để nộp một lần là:
+Candidate v5.1 ở trên đã nộp và đạt TABLES_F2 `.4443`, DOCS_F2 `.8975`,
+ANSWER/EXEC `.2312`. Quy trình hiện hành chuyển sang v5.2a ở mục 13.
 
-artifacts/submission_p22bc_semantic_v51/submission.zip
+## 13. V5.2a — column-role + period + unit repair với silver verifier — SUBMITTED CONTROL
 
-Chưa gộp sửa deterministic cho ID 71/271 vào candidate này. Hai ID đó đang là output
-status=ok của #19 nên cần overlay allowlist/provenance riêng và một submission ablation
-riêng; không được âm thầm thay bằng hybrid fallback. Sau khi có score v5.1, ưu tiên
-column-role/unit overlay CPU trước khi mở rộng mask hoặc chạy thêm Qwen.
-quyết định cấu hình; không tự giảm token rồi resume vào file cũ.
+### 13.1. Control và kết quả leaderboard đầu vào
+
+Control bất biến của lượt này là:
+
+- codegen: `artifacts/codegen_p22bc_semantic_v51_hybrid.jsonl`;
+- SHA-256: `8a4b19754c16cdc6f1c1d6eeb8a5c996cb17c3bb02d5c0f739d6317b199db877`;
+- run signature: `b70e9e2075714774f09924c61918edede28cf3d600d697b9c73c46abd76a5d6d`;
+- leaderboard: TABLES_F2 `.4443`, DOCS_F2 `.8975`, ANSWER/EXEC `.2312`.
+
+So với #19 `.2292`, sáu fill P2.2 chỉ tăng ròng `.0020 = 1/506` câu đúng.
+V5.2a vì vậy không mở rộng Qwen/structural-none mà sửa các output `status=ok` có
+lỗi cell-level chứng minh được.
+
+### 13.2. Contract fail-closed
+
+Module `vifinqa/codegen/semantic_repair.py` chỉ sửa khi đồng thời thỏa:
+
+1. route là `lookup`, output `number`, đúng một fact và query là exact historical
+   one-cell lookup trên đúng một dataframe;
+2. trigger là cột đã chọn thuộc `Thuyết minh/Mã số/STT` hoặc unit metadata có
+   terminal-bare-VND override hợp lệ;
+3. đúng một cột ánh xạ target year bằng explicit date/year, current/prior header hoặc
+   positional-current fallback;
+4. row metric đạt ngưỡng và ticker/report year/doc_type khớp fact;
+5. ít nhất một table/report độc lập có **signed value** giống nhau sau effective-unit
+   normalization; chỉ cùng trị tuyệt đối nhưng trái dấu không được chấp nhận;
+6. output dùng exact `(row,col)`, finite, compile được và có evidence variable.
+
+Silver verifier tìm support trong table khác cùng report và cột prior-period của report
+năm kế tiếp. Silver evidence là consistency proof, không phải gold label. CLI bắt exact
+primary signature/hash, retrieval hash và exact selected-ID allowlist; output/audit dùng
+exclusive-create, không ghi đè artifact cũ.
+
+### 13.3. Allowlist đã khóa
+
+| ID | v5.1 | v5.2a | Silver supports |
+|---:|---:|---:|---:|
+| 61 | 0 | 1,997.40 | 2 |
+| 71 | 24.10 | 2,998.87 | 2 |
+| 101 | 0 | 1.33 | 4 |
+| 139 | 28.10 | 3,176,645,956.00 | 1 |
+| 176 | 0 | 0.90 | 2 |
+| 201 | 0 | 3.98 | 1 |
+| 255 | 0 | 17.66 | 2 |
+| 271 | 46,144,766,536.00 | 46.14 | 2 |
+| 278 | 0 | 1.74 | 3 |
+| 289 | 0 | 271.51 | 1 |
+| 307 | 0 | 1.08 | 3 |
+| 310 | 0 | 2.26 | 1 |
+| 337 | 0 | 81.57 | 3 |
+
+ID 67 bị reject: target cell giá vốn là `-890.93` nhưng table silver là `+890.93`.
+Policy yêu cầu signed agreement nên không đưa câu này vào submission.
+
+### 13.4. Lệnh đã dùng trên môi trường (base)
+
+Không cần Kaggle/GPU. Các path canonical dưới đây đã tồn tại và script sẽ từ chối
+overwrite; block này là provenance để tái lập bằng suffix mới sau khi archive artifact cũ.
+
+~~~powershell
+cd D:\Python_Project\Hackathon\R2AI_2026
+
+python scripts/52_build_v52a_semantic_repair.py --primary artifacts/codegen_p22bc_semantic_v51_hybrid.jsonl --retrieval artifacts/retrieval.jsonl --store-dir artifacts/store --out artifacts/codegen_p22bc_semantic_v52a_overlay.jsonl --audit artifacts/codegen_p22bc_semantic_v52a_overlay.audit.json --expect-selected-ids 61,71,101,139,176,201,255,271,278,289,307,310,337 --expect-primary-signature b70e9e2075714774f09924c61918edede28cf3d600d697b9c73c46abd76a5d6d --expect-primary-sha256 8a4b19754c16cdc6f1c1d6eeb8a5c996cb17c3bb02d5c0f739d6317b199db877 --expect-retrieval-sha256 96b71c5b31a193dcad969de6b1e5ac64ff38c36bfcd44c15e491c240f09d685a
+
+python scripts/05_build_submission.py --retrieval artifacts/retrieval.jsonl --codegen artifacts/codegen_p22bc_semantic_v52a_overlay.jsonl --store-dir artifacts/store --out-dir artifacts/submission_p22bc_semantic_v52a --sub-k 5 --pos-mode line --questions data/ViFinQA/questions/questions.jsonl
+~~~
+
+### 13.5. Audit và hash đã khóa
+
+- codegen: 1,012 unique rows, một run signature, mọi answer finite;
+- chỉ 13 ID trong allowlist đổi answer/query/source/status/evidence; 999 ID còn lại
+  không semantic drift;
+- 214 structural-none giữ nguyên;
+- mọi 1,012 query eval-compile và replay khớp answer;
+- ZIP: 1 `results.json` + 1,575 CSV, không path unsafe;
+- builder canonicalize text của 40 query kế thừa, AST tương đương 40/40; không target
+  v5.2a nào bị đổi query text;
+- full suite trên `(base)`: `288 passed`.
+
+| Artifact | SHA-256 / signature |
+|---|---|
+| codegen v5.2a | `e339da82b8a49a3160427946d1f05ba59269c6f730e2ec4bf5d4e22864351ab4` |
+| run signature v5.2a | `dc34176abba043ff3a0b42f1e8c5861067c82ba165bf36c29f0a641eb33b69d0` |
+| submission ZIP | `d679eda29919fba677ec3eadb7a68fcece0142d97696d3830a89175347c5b8c7` |
+
+Kiểm tra read-only:
+
+~~~powershell
+python -m pytest -p no:cacheprovider --basetemp artifacts/pytest_tmp_runbook tests -q
+Get-FileHash -Algorithm SHA256 artifacts/submission_p22bc_semantic_v52a/submission.zip
+python -c "import json; a=json.load(open('artifacts/codegen_p22bc_semantic_v52a_overlay.audit.json',encoding='utf-8')); print(a['selected_ids'],a['run_signature'],a['output']['sha256'])"
+~~~
+
+### 13.6. File để nộp
+
+`artifacts/submission_p22bc_semantic_v52a/submission.zip`
+
+Candidate này đã nộp và đạt:
+
+- TABLES_F2 `.4443`, DOCS_F2 `.8975`;
+- ANSWER/EXEC `.2451`, tăng `.0139` so với v5.1 `.2312`, tương ứng khoảng
+  **+7/506 câu đúng ròng**;
+- toàn bộ retrieval metric giữ nguyên so với v5.1.
+
+Đây là control tốt nhất đã nộp cho lượt v5.2b bên dưới. Không rebuild payload Kaggle.
+
+## 14. V5.2b — multi-operand repair với signed-silver verifier — CURRENT
+
+### 14.1. Frozen control
+
+- primary: `artifacts/codegen_p22bc_semantic_v52a_overlay.jsonl`;
+- SHA-256: `e339da82b8a49a3160427946d1f05ba59269c6f730e2ec4bf5d4e22864351ab4`;
+- run signature: `dc34176abba043ff3a0b42f1e8c5861067c82ba165bf36c29f0a641eb33b69d0`;
+- leaderboard: TABLES_F2 `.4443`, DOCS_F2 `.8975`, ANSWER/EXEC `.2451`;
+- 214 structural-none giữ nguyên.
+
+### 14.2. Contract fail-closed
+
+Module `vifinqa/codegen/semantic_repair_v52b.py` chỉ hỗ trợ bốn shape lịch sử:
+
+1. `difference` + output `number` + đúng 2 facts;
+2. `growth_pct` + output `percent` + đúng 2 facts;
+3. `ratio` + output `percent` + đúng numerator/denominator;
+4. `average` + output `number` + 2–6 facts.
+
+Mọi proposal phải qua đồng thời:
+
+- query cũ là một biểu thức AST đúng template, không nested/filter/ranking/conditional;
+- exact assignment fact ↔ leaf theo ticker/doc/year/metric và không mơ hồ;
+- mỗi toán hạng có target-period column duy nhất, metric score đủ ngưỡng, effective-unit
+  normalization và **signed silver support độc lập**;
+- không trùng stable cell; ít nhất một toán hạng có trigger note/code hoặc
+  terminal-bare-VND;
+- công thức cố định: `A-B`, `(end-base)/abs(base)*100`, `num/den*100` có dấu,
+  hoặc trung bình cộng;
+- exact-cell query phải finite, plausible, compile và semantic replay khớp answer.
+
+Silver support là consistency proof chứ không phải gold. Thiếu một guard là loại toàn bộ
+record; v5.2b không sửa `failed`/structural-none và không gọi LLM.
+
+### 14.3. Allowlist đã khóa
+
+| ID | Op | v5.2a | v5.2b | Silver supports từng operand |
+|---:|---|---:|---:|---:|
+| 605 | growth_pct | 0 | -20.73 | 4 / 3 |
+| 718 | ratio | 0 | -39.92 | 1 / 2 |
+| 721 | ratio | 99,355,329,434.78 | 1.40 | 2 / 3 |
+| 771 | difference | 2,938,198.00 | 30,436,754.00 | 1 / 1 |
+| 827 | average | 3.84 | 602.38 | 1 / 1 / 2 / 1 |
+| 927 | average | 5.77 | 37.25 | 2 / 1 / 1 / 2 / 2 |
+
+ID 605 được khóa thứ tự `(end, base)` theo năm giảm dần trước khi compile. ID 718 giữ
+dấu âm vì registry và câu hỏi dùng trực tiếp `numerator / denominator * 100`; không tự
+động lấy trị tuyệt đối. Ba proposal có trigger nhưng thiếu signed support ở ít nhất một
+operand (665, 667, 762) bị loại.
+
+### 14.4. Lệnh local trên môi trường (base)
+
+Không cần Kaggle/GPU. Preflight là read-only:
+
+~~~powershell
+cd D:\Python_Project\Hackathon\R2AI_2026
+
+python scripts/53_build_v52b_multi_operand_repair.py --primary artifacts/codegen_p22bc_semantic_v52a_overlay.jsonl --retrieval artifacts/retrieval.jsonl --store-dir artifacts/store --preflight
+~~~
+
+Lệnh build provenance dưới đây dùng exclusive-create; artifact canonical đã tồn tại.
+Muốn tái lập phải archive trước và dùng suffix output mới:
+
+~~~powershell
+python scripts/53_build_v52b_multi_operand_repair.py --primary artifacts/codegen_p22bc_semantic_v52a_overlay.jsonl --retrieval artifacts/retrieval.jsonl --store-dir artifacts/store --out artifacts/codegen_p22bc_semantic_v52b_overlay.jsonl --audit artifacts/codegen_p22bc_semantic_v52b_overlay.audit.json --expect-selected-ids 605,718,721,771,827,927 --expect-primary-signature dc34176abba043ff3a0b42f1e8c5861067c82ba165bf36c29f0a641eb33b69d0 --expect-primary-sha256 e339da82b8a49a3160427946d1f05ba59269c6f730e2ec4bf5d4e22864351ab4 --expect-retrieval-sha256 96b71c5b31a193dcad969de6b1e5ac64ff38c36bfcd44c15e491c240f09d685a
+
+python scripts/05_build_submission.py --retrieval artifacts/retrieval.jsonl --codegen artifacts/codegen_p22bc_semantic_v52b_overlay.jsonl --store-dir artifacts/store --out-dir artifacts/submission_p22bc_semantic_v52b --sub-k 5 --pos-mode line --questions data/ViFinQA/questions/questions.jsonl
+~~~
+
+### 14.5. Audit và hash đã khóa
+
+- codegen: 1,012 unique rows, đúng 6 ID thay đổi và 1,006 ID semantic-unchanged;
+- 214 structural-none giữ nguyên; mọi answer finite; đúng một run signature;
+- builder kiểm compile/replay đủ 1,012 query;
+- 6 query mới bị canonicalize dấu ngoặc nhưng AST tương đương 6/6 và answer khớp;
+- ZIP: 1 `results.json` + 1,575 CSV, không path unsafe.
+
+| Artifact | SHA-256 / signature |
+|---|---|
+| codegen v5.2b | `51287d094488edac7b376bf6648dac289218fd1ffd69d28f9e097a1290580f4b` |
+| run signature v5.2b | `98a638a1d0b5b58f763195578799fee2199e5c54149c28c740a21353faff242f` |
+| submission ZIP | `90a766fa5860d6efc1a07afaf5967de4ca28a2ec963d993e4b018265b5401209` |
+
+Kiểm tra read-only:
+
+~~~powershell
+python -m pytest -p no:cacheprovider --basetemp artifacts/pytest_tmp_runbook tests -q
+Get-FileHash -Algorithm SHA256 artifacts/submission_p22bc_semantic_v52b/submission.zip
+python -c "import json; a=json.load(open('artifacts/codegen_p22bc_semantic_v52b_overlay.audit.json',encoding='utf-8')); print(a['selected_ids'],a['run_signature'],a['output']['sha256'])"
+~~~
+
+### 14.6. File để nộp
+
+`artifacts/submission_p22bc_semantic_v52b/submission.zip`
+
+Chỉ nộp đúng candidate này một lần và báo đủ metric. Không dùng public score để nới
+allowlist/threshold hồi tố; nếu v5.2b giảm điểm, quay lại frozen v5.2a.
+
+## 15. P2.4-silver tự động + v5.3a/v5.3b (CURRENT)
+
+Exact command đầy đủ, hashes và thứ tự nộp nằm tại `RUNBOOK.md` mục 10. Tóm tắt
+authoritative cho lượt này:
+
+### 15.1 P2.4-silver report-diverse
+
+```powershell
+python scripts/54_p24_auto_silver.py build `
+  --store-dir artifacts/store --out-dir artifacts/p24_silver_auto_v53 `
+  --seed 2453 --max-per-report-pair 1 --max-tickers-per-split 8
+
+python scripts/54_p24_auto_silver.py evaluate `
+  --split artifacts/p24_silver_auto_v53/p24_silver_tune.jsonl `
+  --store-dir artifacts/store --out artifacts/p24_silver_auto_v53/eval_tune_v53.json `
+  --expect-split-sha256 8218ee4cda90f026f8a7854cf1ba441165fed5ae4d41879a9b69b5dff6df1ec4
+
+python scripts/54_p24_auto_silver.py evaluate `
+  --split artifacts/p24_silver_auto_v53/p24_silver_locked.jsonl `
+  --store-dir artifacts/store --out artifacts/p24_silver_auto_v53/eval_locked_v53.json `
+  --expect-split-sha256 98c489ce5779c42b5b290949522367fa2f377d65585e777e5ad25f44672006cb
+```
+
+Fingerprint `15be1d901009ee769883552f4e4132af2d4c13da55dcc8b2e6610715923eabb5`.
+Tune 123 facts: precision accepted `1.0`, coverage `.8617886`; locked 136 facts:
+precision accepted `1.0`, coverage `.9191176`. Ticker giữa splits không giao nhau.
+
+### 15.2 Hai ablation phải nộp riêng
+
+V5.3a sửa đúng IDs `245,329,730`:
+
+```powershell
+python scripts/55_build_v53a_single_cell_consensus.py `
+  --primary artifacts/codegen_p22bc_semantic_v52a_overlay.jsonl `
+  --retrieval artifacts/retrieval.jsonl --store-dir artifacts/store --preflight
+python scripts/05_build_submission.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/codegen_p22bc_semantic_v53a_overlay.jsonl `
+  --store-dir artifacts/store --out-dir artifacts/submission_p22bc_semantic_v53a `
+  --sub-k 5 --pos-mode line
+```
+
+ZIP: `artifacts/submission_p22bc_semantic_v53a/submission.zip`, SHA-256
+`c538f805411a7cc540f3e38d3712b8cdb0c83d315748e583f7a37690de953e88`.
+
+V5.3b audit đúng universe 30 lookup structural-none nhưng chỉ rescue IDs `158,213`:
+
+```powershell
+python scripts/56_build_v53b_lookup_rescue.py `
+  --primary artifacts/codegen_p22bc_semantic_v52a_overlay.jsonl `
+  --retrieval artifacts/retrieval.jsonl --store-dir artifacts/store --preflight
+python scripts/05_build_submission.py `
+  --retrieval artifacts/retrieval.jsonl `
+  --codegen artifacts/codegen_p22bc_semantic_v53b_lookup_rescue.jsonl `
+  --store-dir artifacts/store `
+  --out-dir artifacts/submission_p22bc_semantic_v53b_lookup_rescue `
+  --sub-k 5 --pos-mode line
+```
+
+ZIP: `artifacts/submission_p22bc_semantic_v53b_lookup_rescue/submission.zip`, SHA-256
+`dbca0c56f825ed4806389f19326d7e986f0d88ffb6e3e8e7c2efc875e2317cc8`.
+
+Nộp v5.3a trước, v5.3b sau; không sửa threshold/policy theo score trung gian. Cả hai
+dùng frozen v5.2a, không xếp chồng. Gate cuối: full suite `301 passed`; mỗi ZIP 1.012
+results + 1.575 CSV, toàn bộ query compile/replay.
+### 15.4 Kết quả leaderboard và control kế tiếp
+
+- V5.3a: TABLES_F2 `.4453`, DOCS_F2 `.8975`, TABLES precision/recall `.2770/.6342`,
+  DOCS precision/recall `.9488/.8949`, ANSWER/EXEC `.2490`.
+- V5.3b: TABLES_F2 `.4443`, DOCS_F2 `.8975`, TABLES precision/recall `.2766/.6323`,
+  DOCS precision/recall `.9488/.8949`, ANSWER/EXEC `.2470`.
+- Baseline v5.2a là `.2451`; độ phân giải 506 câu cho thấy gain tương ứng khoảng +2 và
+  +1 câu đúng ròng. Score tổng không định danh ID đúng riêng lẻ.
+- Hai candidate cùng frozen primary và sửa hai tập ID rời nhau, nên union exact năm ID
+  có dự báo row-level `127/506 = .2510`. Không coi đây là score thật trước khi nộp.
+- Control kế tiếp: build v5.3c từ chính hai artifact đã audit, giữ nguyên query/evidence
+  của từng repair, xác minh chỉ IDs `[158,213,245,329,730]` đổi, rồi nộp một lần.
