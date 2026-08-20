@@ -15,7 +15,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, asdict
 
-from ..finance.metrics import code_expectation, expand_metric_variants
+from ..finance.metrics import (
+    code_expectation,
+    expand_metric_variants,
+    extract_metric_qualifiers,
+    metric_keys,
+    metric_schema_score,
+)
 from ..router.metric_phrase import has_qualifier
 from ..utils.viet_text import label_metric_score, norm
 from .serialize import df_roundtrip
@@ -45,13 +51,18 @@ class Candidate:
 
 def build_shortlist(tables: list[dict], metric_variants: list[str],
                     years: list[int] | None = None, top_n: int = 8,
-                    encoder=None, min_score: float = 35.0) -> list[Candidate]:
+                    encoder=None, min_score: float = 35.0,
+                    question: str = "") -> list[Candidate]:
     """tables: bundle tables ({var, report_id, table_pos, csv_text, ...}).
 
     Returns the best `top_n` (label, column) cells across all tables, sorted by
     descending score. One entry per (table, label, chosen column).
     """
-    metric_variants = expand_metric_variants(m for m in metric_variants if m)
+    original_variants = [m for m in metric_variants if m]
+    asked_keys = metric_keys(original_variants, expand_derived=False)
+    requested = extract_metric_qualifiers(
+        " ".join((*original_variants, question)), asked_keys)
+    metric_variants = expand_metric_variants(original_variants, question=question)
     if not metric_variants:
         return []
     want_qual = _qualifiers_in(metric_variants[0])
@@ -78,6 +89,7 @@ def build_shortlist(tables: list[dict], metric_variants: list[str],
             sem = float(sem_lookup.get(label, 0.0)) * 100.0
             score = max(lex, sem) + 0.25 * min(lex, sem)
             score += _qualifier_bonus(label, want_qual)
+            score += metric_schema_score(original_variants, label, question)
             if score < min_score:
                 continue
             # Prefer the TIGHTEST label covering the metric: extra qualifier
@@ -86,7 +98,8 @@ def build_shortlist(tables: list[dict], metric_variants: list[str],
             score -= _extra_token_penalty(label, metric_variants)
 
             sub = df[df["label"] == label]
-            pick = _pick_column(sub, years, t.get("report_year"))
+            pick = _pick_column(
+                sub, years, t.get("report_year"), requested.period)
             if pick is None:
                 continue
             row_i, col, col_name, value, unit_scale, code = pick
@@ -208,21 +221,38 @@ def _period_kind(col_name: str) -> str:
 
 
 def _column_score(col_name: str, years: list[int] | None,
-                  report_year: int | None) -> int:
+                  report_year: int | None,
+                  requested_period: str = "") -> int:
     """Rank value columns using explicit years and financial-period headers."""
     cn = str(col_name or "")
     requested = {int(y) for y in (years or [])}
+    kind = _period_kind(cn)
+    period_adjust = 0
+    if requested_period == "opening":
+        if any(re.search(rf"(?:1|01)\s*/\s*(?:1|01)\s*/\s*{y}", cn)
+               for y in requested):
+            period_adjust = 45
+        elif kind == "prior":
+            period_adjust = 35
+        elif kind == "current":
+            period_adjust = -45
+    elif requested_period == "closing":
+        if any(re.search(rf"31\s*/\s*12\s*/\s*{y}", cn) for y in requested):
+            period_adjust = 45
+        elif kind == "current":
+            period_adjust = 35
+        elif kind == "prior":
+            period_adjust = -45
 
     # A literal requested year beats every inferred current/prior convention.
     for y in requested:
         if re.search(rf"31\s*/\s*12\s*/\s*{y}", cn):
-            return 100
+            return 100 + period_adjust
         if re.search(rf"(?<!\d){y}(?!\d)", cn):
-            return 95
+            return 95 + period_adjust
     if re.search(r"(?<!\d)(19|20)\d{2}(?!\d)", cn):
         return -40
 
-    kind = _period_kind(cn)
     if kind == "metadata":
         return -100
 
@@ -230,19 +260,22 @@ def _column_score(col_name: str, years: list[int] | None,
     prior_wanted = (report_year is not None and
                     any(int(report_year) == y + 1 for y in requested))
     if kind == "current":
-        return 80 if current_wanted and not prior_wanted else 20
+        base = 80 if current_wanted and not prior_wanted else 20
+        return base + period_adjust
     if kind == "prior":
-        return 80 if prior_wanted else 10
-    return 30
+        base = 80 if prior_wanted else 10
+        return base + period_adjust
+    return 30 + period_adjust
 
 
 def _pick_column(sub, years: list[int] | None,
-                 report_year: int | None = None):
+                 report_year: int | None = None,
+                 requested_period: str = ""):
     """Choose the requested financial period, excluding code/note columns."""
     best = None
     for r in sub.itertuples():
         cn = str(r.col_name)
-        cs = _column_score(cn, years, report_year)
+        cs = _column_score(cn, years, report_year, requested_period)
         # For equally informative headers, retain the original left-to-right
         # convention among actual value columns.
         rank = (cs, -int(r.col))

@@ -2,8 +2,11 @@ from vifinqa.finance.metrics import (
     METRICS,
     code_expectation,
     expand_metric_variants,
+    extract_metric_qualifiers,
     find_metrics,
     get_metric,
+    metric_schema_score,
+    metric_uses_absolute_value,
     metric_keys,
 )
 
@@ -14,6 +17,14 @@ def test_corporate_registry_has_unique_keys_and_expected_schema():
     assert get_metric("net_profit").statement == "income_statement"
     assert "chua phan phoi" in get_metric("net_profit").forbidden_phrases
     assert get_metric("cfo").statement == "cash_flow"
+
+
+def test_equity_resolves_to_the_aggregate_vas_400_line():
+    assert get_metric("equity").codes == ("400",)
+    codes, mismatch = code_expectation(
+        ["von chu so huu"], "VON CHU SO HUU (400 = 410 + 430)")
+    assert codes == {"400"}
+    assert not mismatch
 
 
 def test_alias_maps_to_canonical_line_item():
@@ -76,3 +87,35 @@ def test_interest_coverage_is_not_blocked_by_thanh_toan_word():
     variants = expand_metric_variants(["he so kha nang thanh toan lai vay"])
     assert "loi nhuan truoc thue" in variants
     assert "chi phi lai vay" in variants
+
+
+def test_bank_parent_and_child_metrics_are_distinct():
+    assert metric_keys(["tien gui va vay cac TCTD khac"], False) == [
+        "interbank_funding_total"]
+    assert metric_keys(["vay cac TCTD khac"], False) == [
+        "interbank_borrowings"]
+    assert metric_schema_score(
+        ["vay cac TCTD khac"], "Tien gui va vay cac TCTD khac") < -20
+    assert metric_schema_score(
+        ["vay cac TCTD khac"], "Vay cac TCTD khac") > 10
+
+
+def test_provision_stock_and_flow_metrics_are_distinct():
+    assert metric_keys(["so du du phong rui ro cho vay khach hang"], False) == [
+        "customer_loan_provision_balance"]
+    assert metric_keys(["trich lap du phong rui ro cho vay khach hang"], False) == [
+        "customer_loan_provision_expense"]
+
+
+def test_structured_qualifiers_cover_requested_dimensions():
+    q = extract_metric_qualifiers(
+        "Tong gia tri thuan vay dai han dau nam, tinh theo tri tuyet doi")
+    assert q.stock_flow == "stock"
+    assert q.gross_net == "net"
+    assert q.maturity == "long"
+    assert q.period == "opening"
+    assert q.granularity == "aggregate"
+
+
+def test_expense_metric_uses_absolute_value():
+    assert metric_uses_absolute_value("chi phi lai vay", ["interest_expense"])

@@ -17,6 +17,32 @@ from ..utils.viet_text import norm
 
 
 @dataclass(frozen=True)
+class MetricQualifiers:
+    """Semantic dimensions that distinguish otherwise similar line items.
+
+    Empty means unspecified.  Values intentionally use a tiny controlled
+    vocabulary so router, retrieval and codegen can share the same contract.
+    """
+
+    stock_flow: str = ""       # stock | flow
+    gross_net: str = ""        # gross | net
+    maturity: str = ""         # short | medium | long
+    period: str = ""           # opening | closing
+    granularity: str = ""      # aggregate | detail
+    sign: str = ""             # signed | absolute
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "stock_flow": self.stock_flow,
+            "gross_net": self.gross_net,
+            "maturity": self.maturity,
+            "period": self.period,
+            "granularity": self.granularity,
+            "sign": self.sign,
+        }
+
+
+@dataclass(frozen=True)
 class CanonicalMetric:
     key: str
     label: str
@@ -27,6 +53,7 @@ class CanonicalMetric:
     forbidden_phrases: tuple[str, ...] = ()
     qualifier_phrases: tuple[str, ...] = ()
     components: tuple[str, ...] = ()
+    qualifiers: MetricQualifiers = MetricQualifiers()
 
     @property
     def variants(self) -> tuple[str, ...]:
@@ -57,7 +84,13 @@ def _dedupe(values: Iterable[str]) -> tuple[str, ...]:
 
 def _metric(key: str, label: str, aliases=(), codes=(), statement="other",
             required=(), forbidden=(), qualifiers=(),
-            components=()) -> CanonicalMetric:
+            components=(), *, stock_flow="", gross_net="", maturity="",
+            granularity="", sign="") -> CanonicalMetric:
+    if not stock_flow:
+        if statement == "balance_sheet":
+            stock_flow = "stock"
+        elif statement in ("income_statement", "cash_flow"):
+            stock_flow = "flow"
     return CanonicalMetric(
         key=key,
         label=norm(label),
@@ -68,6 +101,13 @@ def _metric(key: str, label: str, aliases=(), codes=(), statement="other",
         forbidden_phrases=_dedupe(norm(a) for a in forbidden),
         qualifier_phrases=_dedupe(norm(a) for a in qualifiers),
         components=tuple(components),
+        qualifiers=MetricQualifiers(
+            stock_flow=stock_flow,
+            gross_net=gross_net,
+            maturity=maturity,
+            granularity=granularity,
+            sign=sign,
+        ),
     )
 
 
@@ -75,26 +115,32 @@ _LINE_ITEMS = [
     # B01-DN: balance sheet
     _metric("current_assets", "tai san ngan han",
             ("tong tai san ngan han", "tai san luu dong va dau tu ngan han"),
-            ("100",), "balance_sheet", ("tai san ngan han",)),
+            ("100",), "balance_sheet", ("tai san ngan han",),
+            maturity="short", granularity="aggregate"),
     _metric("cash", "tien va cac khoan tuong duong tien",
             ("tien va tuong duong tien", "tien mat va cac khoan tuong duong tien"),
             ("110",), "balance_sheet", ("tien", "tuong duong tien")),
     _metric("short_term_investments", "dau tu tai chinh ngan han",
             ("cac khoan dau tu tai chinh ngan han", "dau tu nam giu den ngay dao han ngan han"),
-            ("120", "123"), "balance_sheet", ("dau tu", "ngan han")),
+            ("120", "123"), "balance_sheet", ("dau tu", "ngan han"),
+            maturity="short"),
     _metric("short_term_receivables", "cac khoan phai thu ngan han",
             ("phai thu ngan han", "tong cac khoan phai thu ngan han"),
-            ("130",), "balance_sheet", ("phai thu", "ngan han")),
+            ("130",), "balance_sheet", ("phai thu", "ngan han"),
+            maturity="short", granularity="aggregate"),
     _metric("trade_receivables_short_term", "phai thu ngan han cua khach hang",
             ("phai thu khach hang ngan han", "phai thu cua khach hang ngan han"),
-            ("131",), "balance_sheet", ("phai thu", "khach hang", "ngan han")),
+            ("131",), "balance_sheet", ("phai thu", "khach hang", "ngan han"),
+            maturity="short", granularity="detail"),
     _metric("supplier_prepayments_short_term", "tra truoc cho nguoi ban ngan han",
             ("tra truoc nguoi ban ngan han", "tien tra truoc cho nguoi ban ngan han"),
-            ("132",), "balance_sheet", ("tra truoc", "nguoi ban", "ngan han")),
+            ("132",), "balance_sheet", ("tra truoc", "nguoi ban", "ngan han"),
+            maturity="short", granularity="detail"),
     _metric("inventory", "hang ton kho", ("hang ton kho rong", "ton kho"),
             ("140", "141"), "balance_sheet", ("hang ton kho", "ton kho")),
     _metric("long_term_assets", "tai san dai han", ("tong tai san dai han",),
-            ("200",), "balance_sheet", ("tai san dai han",)),
+            ("200",), "balance_sheet", ("tai san dai han",),
+            maturity="long", granularity="aggregate"),
     _metric("fixed_assets", "tai san co dinh", ("tong tai san co dinh",),
             ("220",), "balance_sheet", ("tai san co dinh",), ("khau hao",),
             ("khau hao",)),
@@ -105,26 +151,30 @@ _LINE_ITEMS = [
             ("xay dung co ban do dang", "chi phi xay dung co ban dang do"),
             ("242",), "balance_sheet", ("xay dung", "do dang")),
     _metric("total_assets", "tong tai san", ("tong cong tai san",),
-            ("270",), "balance_sheet", ("tong tai san", "tong cong tai san")),
+            ("270",), "balance_sheet", ("tong tai san", "tong cong tai san"),
+            granularity="aggregate"),
     _metric("liabilities", "no phai tra", ("tong no phai tra", "tong cong no phai tra"),
             ("300",), "balance_sheet", ("no phai tra",),
-            ("no ngan han", "no dai han")),
+            ("no ngan han", "no dai han"), granularity="aggregate"),
     _metric("current_liabilities", "no ngan han",
             ("tong no ngan han", "no phai tra ngan han"),
             ("310",), "balance_sheet", ("no ngan han", "no phai tra ngan han"),
-            qualifiers=("ben lien quan",)),
+            qualifiers=("ben lien quan",), maturity="short", granularity="aggregate"),
     _metric("trade_payables_short_term", "phai tra nguoi ban ngan han",
             ("phai tra ngan han cho nguoi ban", "phai tra cho nguoi ban ngan han"),
-            ("311",), "balance_sheet", ("phai tra", "nguoi ban", "ngan han")),
+            ("311",), "balance_sheet", ("phai tra", "nguoi ban", "ngan han"),
+            maturity="short", granularity="detail"),
     _metric("short_term_borrowings", "vay va no thue tai chinh ngan han",
-            ("vay ngan han", "vay va no ngan han"),
-            ("320",), "balance_sheet", ("vay", "ngan han")),
+            ("vay ngan han", "vay va no ngan han", "no vay ngan han"),
+            ("320",), "balance_sheet", ("vay", "ngan han"),
+            maturity="short", granularity="aggregate"),
     _metric("long_term_liabilities", "no dai han", ("tong no dai han",),
-            ("330",), "balance_sheet", ("no dai han",)),
+            ("330",), "balance_sheet", ("no dai han",),
+            maturity="long", granularity="aggregate"),
     _metric("equity", "von chu so huu",
             ("tong von chu so huu", "nguon von chu so huu"),
-            ("400", "410"), "balance_sheet", ("von chu so huu",),
-            ("von gop cua chu so huu",)),
+            ("400",), "balance_sheet", ("von chu so huu",),
+            ("von gop cua chu so huu",), granularity="aggregate"),
     _metric("contributed_capital", "von gop cua chu so huu",
             ("von dau tu cua chu so huu", "von gop chu so huu"),
             ("411",), "balance_sheet", ("von", "chu so huu")),
@@ -141,9 +191,9 @@ _LINE_ITEMS = [
             ("giam tru", "doanh thu")),
     _metric("net_revenue", "doanh thu thuan",
             ("doanh thu thuan ve ban hang va cung cap dich vu",),
-            ("10",), "income_statement", ("doanh thu thuan",)),
+            ("10",), "income_statement", ("doanh thu thuan",), gross_net="net"),
     _metric("cost_of_goods_sold", "gia von hang ban", ("gia von",),
-            ("11",), "income_statement", ("gia von",)),
+            ("11",), "income_statement", ("gia von",), sign="absolute"),
     _metric("gross_profit", "loi nhuan gop",
             ("loi nhuan gop ve ban hang va cung cap dich vu",),
             ("20",), "income_statement", ("loi nhuan gop",)),
@@ -151,21 +201,22 @@ _LINE_ITEMS = [
             ("doanh thu tai chinh",), ("21",), "income_statement",
             ("doanh thu", "tai chinh")),
     _metric("financial_expense", "chi phi tai chinh", ("chi phi hoat dong tai chinh",),
-            ("22",), "income_statement", ("chi phi", "tai chinh")),
-    _metric("interest_expense", "chi phi lai vay", ("lai tien vay",),
+            ("22",), "income_statement", ("chi phi", "tai chinh"),
+            sign="absolute"),
+    _metric("interest_expense", "chi phi lai vay", ("lai tien vay", "lai vay"),
             ("23",), "income_statement", ("chi phi lai vay", "lai tien vay"),
-            ("da tra", "thuc tra", "thanh toan")),
+            ("da tra", "thuc tra", "thanh toan"), sign="absolute"),
     _metric("selling_expense", "chi phi ban hang", (), ("25",),
-            "income_statement", ("chi phi ban hang",)),
+            "income_statement", ("chi phi ban hang",), sign="absolute"),
     _metric("administrative_expense", "chi phi quan ly doanh nghiep", (), ("26",),
-            "income_statement", ("chi phi quan ly doanh nghiep",)),
+            "income_statement", ("chi phi quan ly doanh nghiep",), sign="absolute"),
     _metric("operating_profit", "loi nhuan thuan tu hoat dong kinh doanh",
             ("loi nhuan thuan hoat dong kinh doanh",), ("30",),
             "income_statement", ("loi nhuan thuan", "hoat dong kinh doanh")),
     _metric("other_income", "thu nhap khac", (), ("31",),
             "income_statement", ("thu nhap khac",)),
     _metric("other_expense", "chi phi khac", (), ("32",),
-            "income_statement", ("chi phi khac",)),
+            "income_statement", ("chi phi khac",), sign="absolute"),
     _metric("other_profit", "loi nhuan khac", (), ("40",),
             "income_statement", ("loi nhuan khac",)),
     _metric("pretax_profit", "loi nhuan truoc thue",
@@ -173,15 +224,17 @@ _LINE_ITEMS = [
             ("50",), "income_statement",
             ("loi nhuan truoc thue", "loi nhuan ke toan truoc thue")),
     _metric("current_income_tax", "chi phi thue thu nhap doanh nghiep hien hanh",
-            ("chi phi thue tndn hien hanh", "thue thu nhap doanh nghiep hien hanh"),
+            ("chi phi thue tndn hien hanh", "thue thu nhap doanh nghiep hien hanh",
+             "chi phi thue thu nhap hien hanh", "chi phi thue hien hanh"),
             ("51",), "income_statement", ("thue", "thu nhap", "hien hanh"),
-            ("ca nhan", "hoan lai")),
+            ("ca nhan", "hoan lai"), sign="absolute"),
     _metric("deferred_income_tax", "chi phi thue thu nhap doanh nghiep hoan lai",
             ("chi phi thue tndn hoan lai", "thue thu nhap hoan lai"),
             ("52",), "income_statement", ("thue", "thu nhap", "hoan lai"),
-            ("ca nhan", "hien hanh")),
+            ("ca nhan", "hien hanh"), sign="absolute"),
     _metric("net_profit", "loi nhuan sau thue",
-            ("loi nhuan sau thue thu nhap doanh nghiep", "loi nhuan thuan sau thue", "lnst"),
+            ("loi nhuan sau thue thu nhap doanh nghiep", "loi nhuan thuan sau thue",
+             "loi nhuan ke toan sau thue tndn", "loi nhuan thuan trong nam", "lnst"),
             ("60",), "income_statement",
             ("loi nhuan sau thue", "loi nhuan thuan sau thue"),
             ("chua phan phoi", "thuoc ve co dong", "cua co dong", "phan bo cho"),
@@ -211,6 +264,248 @@ _LINE_ITEMS = [
     _metric("closing_cash", "tien va tuong duong tien cuoi ky",
             ("tien va tuong duong tien cuoi nam",), ("70",), "cash_flow",
             ("tien", "tuong duong tien", "cuoi")),
+]
+
+
+# Sector-specific line items.  Bank statements reuse many ordinary Vietnamese
+# words ("tien gui", "vay", "du phong") for materially different concepts.
+# Keeping the parent and child rows as separate keys lets schema linking reject
+# a lexical superset such as "Tien gui va vay cac TCTD khac" when the question
+# asks only for "Vay cac TCTD khac".
+_BANK_LINE_ITEMS = [
+    _metric("bank_cash", "tien mat vang bac da quy",
+            ("tien mat", "tien mat vang bac"), statement="balance_sheet",
+            granularity="aggregate"),
+    _metric("central_bank_deposits", "tien gui tai ngan hang nha nuoc",
+            ("tien gui tai nhnn", "tien gui tai nhnnvn"),
+            statement="balance_sheet", granularity="detail"),
+    _metric("interbank_assets_total", "tien gui va cho vay cac tctd khac",
+            ("tien gui va cho vay cac to chuc tin dung khac",),
+            statement="balance_sheet", granularity="aggregate"),
+    _metric("interbank_deposits_asset", "tien gui tai cac tctd khac",
+            ("tien gui cac tctd khac", "tien gui tai cac to chuc tin dung khac"),
+            statement="balance_sheet", granularity="detail"),
+    _metric("interbank_loans_asset", "cho vay cac tctd khac",
+            ("cho vay cac to chuc tin dung khac",),
+            statement="balance_sheet", granularity="detail"),
+    _metric("customer_loans", "cho vay khach hang",
+            ("du no cho vay khach hang", "tong du no cho vay", "du no cho vay"),
+            statement="balance_sheet", gross_net="gross",
+            granularity="aggregate"),
+    _metric("customer_loan_provision_balance",
+            "du phong rui ro cho vay khach hang",
+            ("so du du phong rui ro cho vay khach hang",
+             "du phong cho vay khach hang"),
+            statement="balance_sheet", granularity="aggregate",
+            sign="absolute"),
+    _metric("customer_deposits", "tien gui cua khach hang",
+            ("tien gui khach hang",), statement="balance_sheet",
+            granularity="aggregate"),
+    _metric("interbank_funding_total", "tien gui va vay cac tctd khac",
+            ("tien gui va vay cac to chuc tin dung khac",),
+            statement="balance_sheet", granularity="aggregate"),
+    _metric("interbank_deposits_liability", "tien gui cua cac tctd khac",
+            ("tien gui cac to chuc tin dung khac",),
+            statement="balance_sheet", granularity="detail"),
+    _metric("interbank_borrowings", "vay cac tctd khac",
+            ("vay cac to chuc tin dung khac", "tien vay cac tctd khac"),
+            statement="balance_sheet", granularity="detail"),
+    _metric("valuable_papers_issued", "phat hanh giay to co gia",
+            ("giay to co gia phat hanh",), statement="balance_sheet",
+            granularity="aggregate"),
+    _metric("available_for_sale_securities",
+            "chung khoan dau tu san sang de ban",
+            ("chung khoan san sang de ban",), statement="balance_sheet"),
+    _metric("debt_securities", "chung khoan no",
+            ("chung khoan no dau tu",), statement="balance_sheet"),
+    _metric("term_deposits", "tien gui co ky han",
+            ("tien gui ky han",), statement="balance_sheet"),
+    _metric("savings_deposits", "tien gui tiet kiem", (),
+            statement="balance_sheet", granularity="detail"),
+    _metric("government_bonds", "trai phieu chinh phu", (),
+            statement="balance_sheet", granularity="detail"),
+    _metric("vamc_special_bonds", "trai phieu dac biet do vamc phat hanh",
+            ("trai phieu dac biet vamc",), statement="balance_sheet",
+            granularity="detail"),
+    _metric("bank_interest_income", "thu nhap lai va cac khoan thu nhap tuong tu",
+            ("thu nhap lai",), statement="income_statement"),
+    _metric("bank_interest_expense", "chi phi lai va cac chi phi tuong tu",
+            ("chi phi lai ngan hang",), statement="income_statement",
+            sign="absolute"),
+    _metric("net_interest_income", "thu nhap lai thuan",
+            ("lai thuan tu hoat dong tin dung",),
+            statement="income_statement", gross_net="net"),
+    _metric("bank_service_income", "thu nhap tu hoat dong dich vu",
+            ("thu nhap dich vu",), statement="income_statement"),
+    _metric("bank_service_expense", "chi phi hoat dong dich vu",
+            ("chi phi dich vu ngan hang",), statement="income_statement",
+            sign="absolute"),
+    _metric("net_service_income", "lai thuan tu hoat dong dich vu",
+            ("lai lo thuan tu hoat dong dich vu",
+             "ket qua thuan tu hoat dong dich vu"),
+            statement="income_statement", gross_net="net"),
+    _metric("bank_operating_income", "tong thu nhap hoat dong",
+            ("tong thu nhap hoat dong ngan hang",),
+            statement="income_statement", granularity="aggregate"),
+    _metric("bank_operating_expense", "chi phi hoat dong",
+            ("tong chi phi hoat dong",), statement="income_statement",
+            granularity="aggregate", sign="absolute"),
+    _metric("pre_provision_operating_profit",
+            "loi nhuan thuan tu hoat dong kinh doanh truoc chi phi du phong rui ro tin dung",
+            ("loi nhuan truoc du phong", "loi nhuan truoc chi phi du phong"),
+            statement="income_statement", gross_net="net"),
+    _metric("credit_provision_expense", "chi phi du phong rui ro tin dung",
+            ("chi phi du phong tin dung", "chi phi du phong"),
+            statement="income_statement", sign="absolute"),
+    _metric("customer_loan_provision_expense",
+            "trich lap du phong rui ro cho vay khach hang",
+            ("chi phi trich lap du phong rui ro cho vay khach hang",
+             "trich lap du phong cho vay khach hang"),
+            statement="income_statement", granularity="aggregate",
+            sign="absolute"),
+    _metric("general_customer_loan_provision",
+            "du phong chung cho vay khach hang",
+            ("trich lap du phong chung cho vay khach hang",),
+            statement="income_statement", granularity="detail",
+            sign="absolute"),
+    _metric("specific_customer_loan_provision",
+            "du phong cu the cho vay khach hang",
+            ("trich lap du phong cu the cho vay khach hang",),
+            statement="income_statement", granularity="detail",
+            sign="absolute"),
+    _metric("performing_loans", "du no du tieu chuan",
+            ("no du tieu chuan",), statement="balance_sheet",
+            granularity="detail"),
+    _metric("loans_to_economic_entities", "cho vay cac to chuc kinh te",
+            ("cho vay doi voi cac to chuc kinh te va ca nhan trong nuoc",
+             "cho vay to chuc kinh te va ca nhan trong nuoc"),
+            statement="balance_sheet", granularity="detail"),
+    _metric("deposit_and_loan_interest_income", "lai tien gui va cho vay",
+            ("lai tien gui tien cho vay", "lai tien gui"),
+            statement="income_statement"),
+    _metric("forex_commitments", "cam ket giao dich hoi doai",
+            ("cam ket ngoai hoi",), statement="other"),
+]
+
+
+_NOTE_LINE_ITEMS = [
+    _metric("supplier_prepayments_long_term", "tra truoc cho nguoi ban dai han",
+            ("tra truoc nguoi ban dai han",), statement="balance_sheet",
+            maturity="long", granularity="detail"),
+    _metric("other_receivables_short_term", "phai thu ngan han khac",
+            ("cac khoan phai thu khac ngan han",), statement="balance_sheet",
+            maturity="short"),
+    _metric("prepaid_expenses", "chi phi tra truoc", (),
+            statement="balance_sheet", granularity="aggregate"),
+    _metric("prepaid_expenses_short_term", "chi phi tra truoc ngan han",
+            ("chi phi tra truoc ngan han khac",), statement="balance_sheet",
+            maturity="short", granularity="detail"),
+    _metric("prepaid_expenses_long_term", "chi phi tra truoc dai han", (),
+            statement="balance_sheet", maturity="long", granularity="detail"),
+    _metric("income_tax_payable", "thue thu nhap doanh nghiep phai nop",
+            ("thue tndn phai nop", "thue thu nhap phai tra",
+             "thue thu nhap doanh nghiep phai tra"),
+            statement="balance_sheet"),
+    _metric("bonus_welfare_fund", "quy khen thuong phuc loi",
+            ("quy khen thuong va phuc loi",), statement="balance_sheet"),
+    _metric("investment_property_net", "gia tri con lai cua bat dong san dau tu",
+            ("bat dong san dau tu",), statement="balance_sheet",
+            gross_net="net"),
+    _metric("investment_property_cost", "nguyen gia bat dong san dau tu",
+            ("gia goc bat dong san dau tu",), statement="balance_sheet",
+            gross_net="gross"),
+    _metric("goodwill_net", "gia tri con lai cua loi the thuong mai",
+            ("loi the thuong mai",), statement="balance_sheet",
+            gross_net="net"),
+    _metric("issued_share_capital", "von co phan da phat hanh",
+            ("von co phan", "co phan da phat hanh"),
+            statement="balance_sheet"),
+    _metric("shares_outstanding", "so luong co phieu dang luu hanh",
+            ("co phieu pho thong dang luu hanh", "so co phieu dang luu hanh"),
+            statement="balance_sheet"),
+    _metric("ownership_rate", "ty le so huu", ("phan tram so huu",),
+            statement="other", granularity="detail"),
+    _metric("voting_rate", "ty le quyen bieu quyet",
+            ("ty le bieu quyet", "quyen bieu quyet"),
+            statement="other", granularity="detail"),
+    _metric("regular_bonds", "trai phieu thuong",
+            ("tong trai phieu thuong",), statement="balance_sheet",
+            granularity="aggregate"),
+    _metric("regular_bonds_short_term", "trai phieu thuong ngan han", (),
+            statement="balance_sheet", maturity="short", granularity="detail"),
+    _metric("regular_bonds_long_term", "trai phieu thuong dai han", (),
+            statement="balance_sheet", maturity="long", granularity="detail"),
+    _metric("accrued_interest_payable", "lai vay phai tra",
+            ("chi phi lai vay phai tra",), statement="balance_sheet"),
+    _metric("related_party_receivables", "phai thu ben lien quan",
+            ("phai thu tu cac ben lien quan",), statement="balance_sheet",
+            granularity="detail"),
+    _metric("related_party_payables", "phai tra ben lien quan",
+            ("phai tra cho cac ben lien quan",), statement="balance_sheet",
+            granularity="detail"),
+    _metric("outside_services_expense", "chi phi dich vu mua ngoai",
+            ("dich vu mua ngoai",), statement="income_statement",
+            sign="absolute"),
+    _metric("salary_expense", "chi phi luong",
+            ("chi phi nhan cong", "quy luong", "chi phi nhan vien"),
+            statement="income_statement", sign="absolute"),
+    _metric("operating_lease_commitments", "cam ket cho thue hoat dong",
+            ("cam ket thue hoat dong", "tien thue toi thieu trong tuong lai"),
+            statement="other", granularity="aggregate"),
+    _metric("borrowings_total", "vay va no",
+            ("tong no vay", "tong cac khoan vay", "no vay"),
+            statement="balance_sheet", granularity="aggregate"),
+    _metric("borrowings_long_term", "vay dai han",
+            ("cac khoan vay dai han", "no vay dai han"), statement="balance_sheet",
+            maturity="long"),
+    _metric("bonds_issued", "trai phieu phat hanh",
+            ("phat hanh trai phieu",), statement="balance_sheet"),
+    _metric("long_term_financial_investments", "dau tu tai chinh dai han",
+            ("cac khoan dau tu tai chinh dai han",),
+            statement="balance_sheet", maturity="long",
+            granularity="aggregate"),
+    _metric("investments_in_subsidiaries", "dau tu vao cong ty con",
+            ("dau tu vao cac cong ty con",), statement="balance_sheet",
+            granularity="detail"),
+    _metric("investments_in_associates", "dau tu vao cong ty lien ket",
+            ("dau tu vao cac cong ty lien ket", "dau tu cong ty lien ket"),
+            statement="balance_sheet", granularity="detail"),
+    _metric("other_equity_investments", "dau tu gop von vao don vi khac",
+            ("gop von vao don vi khac",), statement="balance_sheet"),
+    _metric("contract_progress_receivables",
+            "phai thu theo tien do ke hoach hop dong",
+            ("phai thu theo tien do hop dong",), statement="balance_sheet"),
+    _metric("buyer_advances", "nguoi mua tra tien truoc",
+            ("nguoi mua tra truoc", "tam ung nhan tu khach hang"),
+            statement="balance_sheet"),
+    _metric("internal_payables", "cac khoan phai tra noi bo",
+            ("phai tra noi bo",), statement="balance_sheet"),
+    _metric("provisions_payable", "du phong phai tra",
+            ("tong du phong phai tra",), statement="balance_sheet",
+            sign="absolute"),
+    _metric("warranty_provision", "du phong chi phi bao hanh",
+            ("du phong bao hanh",), statement="balance_sheet",
+            sign="absolute"),
+    _metric("trading_securities_cost", "gia goc chung khoan kinh doanh",
+            ("chung khoan kinh doanh theo gia goc",),
+            statement="balance_sheet", gross_net="gross"),
+    _metric("land_use_right_net", "gia tri con lai cua quyen su dung dat",
+            ("quyen su dung dat con lai",), statement="balance_sheet",
+            gross_net="net"),
+    _metric("weighted_average_common_shares",
+            "so co phieu pho thong binh quan gia quyen",
+            ("so luong co phieu pho thong binh quan gia quyen",),
+            statement="income_statement"),
+    _metric("common_shareholder_profit",
+            "loi nhuan phan bo cho co dong so huu co phieu pho thong",
+            ("loi nhuan phan bo cho co dong pho thong",),
+            statement="income_statement"),
+    _metric("board_compensation", "thu lao hoi dong quan tri",
+            ("thu lao hdqt", "thu lao thanh vien hdqt"),
+            statement="other", sign="absolute"),
+    _metric("management_compensation", "thu nhap ban tong giam doc va quan ly",
+            ("thu nhap ban tong giam doc", "thu nhap ban dieu hanh"),
+            statement="other", sign="absolute"),
 ]
 
 
@@ -274,7 +569,8 @@ _DERIVED = [
 
 
 METRICS: dict[str, CanonicalMetric] = {
-    metric.key: metric for metric in (*_LINE_ITEMS, *_DERIVED)
+    metric.key: metric
+    for metric in (*_LINE_ITEMS, *_BANK_LINE_ITEMS, *_NOTE_LINE_ITEMS, *_DERIVED)
 }
 
 _ALIAS_TO_METRICS: dict[str, tuple[CanonicalMetric, ...]] = {}
@@ -292,6 +588,116 @@ _ALIAS_RE = re.compile(
 
 def get_metric(key: str) -> CanonicalMetric:
     return METRICS[key]
+
+
+def extract_metric_qualifiers(text: str, keys: Iterable[str] = (),
+                              include_defaults: bool = True) -> MetricQualifiers:
+    """Extract the controlled semantic dimensions from a question or label."""
+    value = norm(text)
+    key_list = tuple(k for k in keys if k in METRICS)
+    defaults = _qualifier_defaults(key_list) if include_defaults else MetricQualifiers()
+
+    period = ""
+    if any(p in value for p in ("so dau nam", "dau nam", "dau ky", "1 1")):
+        period = "opening"
+    elif any(p in value for p in ("so cuoi nam", "cuoi nam", "cuoi ky", "31 12",
+                                  "den ngay", "tai ngay")):
+        period = "closing"
+
+    maturity = ""
+    if "ngan han" in value:
+        maturity = "short"
+    elif "trung han" in value:
+        maturity = "medium"
+    elif "dai han" in value:
+        maturity = "long"
+
+    gross_net = ""
+    if any(p in value for p in ("gia goc", "nguyen gia", "gia tri gop", "du no gop")):
+        gross_net = "gross"
+    elif any(p in value for p in ("gia tri thuan", "gia tri con lai", "sau du phong",
+                                  "gia tri rong")):
+        gross_net = "net"
+
+    granularity = ""
+    if any(p in value for p in ("tong cong", "tong gia tri", "tong so", "tong du no",
+                                "tong thu nhap", "tong chi phi", "quy mo")):
+        granularity = "aggregate"
+    elif any(p in value for p in ("trong do", "cu the", "chi tiet", "doi voi",
+                                  "tai cong ty", "voi cong ty")):
+        granularity = "detail"
+
+    stock_flow = ""
+    if period or any(p in value for p in ("so du", "gia tri ghi so", "du no")):
+        stock_flow = "stock"
+    elif any(p in value for p in ("trong nam", "trong ky", "trich lap",
+                                  "doanh thu", "thu nhap", "loi nhuan",
+                                  "luu chuyen tien", "dong tien")):
+        stock_flow = "flow"
+
+    sign = ""
+    signed_phrases = ("chenh lech", "tru di", "tang truong", "thay doi",
+                      "tang giam", "cao hon", "thap hon", "nhieu hon", "it hon")
+    signed_words = re.search(r"(?<![0-9a-z])(?:am|duong)(?![0-9a-z])", value)
+    if any(p in value for p in signed_phrases) or signed_words:
+        sign = "signed"
+    elif any(p in value for p in ("chi phi", "gia von", "quy mo", "trich lap du phong")):
+        sign = "absolute"
+
+    return MetricQualifiers(
+        stock_flow=stock_flow or defaults.stock_flow,
+        gross_net=gross_net or defaults.gross_net,
+        maturity=maturity or defaults.maturity,
+        period=period or defaults.period,
+        granularity=granularity or defaults.granularity,
+        sign=sign or defaults.sign,
+    )
+
+
+def metric_schema_score(phrases: Iterable[str], label: str,
+                        question: str = "") -> float:
+    """Score canonical identity and qualifier agreement for one row label.
+
+    Lexical similarity alone rates a parent row as a perfect match for its
+    child.  Canonical disagreement must therefore be a larger penalty than any
+    small token-overlap bonus used by the shortlist.
+    """
+    phrase_list = _dedupe(phrases)
+    asked = set(metric_keys(phrase_list, expand_derived=False))
+    labelled = set(metric_keys([label], expand_derived=False))
+    score = 0.0
+    if asked and labelled:
+        score += 16.0 if asked & labelled else -36.0
+
+    asked_q = extract_metric_qualifiers(
+        " ".join((*phrase_list, norm(question))), asked)
+    label_q = extract_metric_qualifiers(label, labelled)
+    for field, reward, penalty in (
+        ("stock_flow", 3.0, -18.0),
+        ("gross_net", 6.0, -28.0),
+        ("maturity", 8.0, -30.0),
+        ("granularity", 5.0, -24.0),
+    ):
+        want = getattr(asked_q, field)
+        have = getattr(label_q, field)
+        if want and have:
+            score += reward if want == have else penalty
+    return score
+
+
+def metric_uses_absolute_value(text: str, keys: Iterable[str] = ()) -> bool:
+    return extract_metric_qualifiers(text, keys).sign == "absolute"
+
+
+def _qualifier_defaults(keys: tuple[str, ...]) -> MetricQualifiers:
+    def one(field: str) -> str:
+        values = {getattr(METRICS[key].qualifiers, field) for key in keys
+                  if getattr(METRICS[key].qualifiers, field)}
+        return next(iter(values)) if len(values) == 1 else ""
+
+    return MetricQualifiers(**{
+        field: one(field) for field in MetricQualifiers.__dataclass_fields__
+    })
 
 
 def find_metrics(text: str, include_derived: bool = True) -> list[MetricMatch]:

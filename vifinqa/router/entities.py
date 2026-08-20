@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from ..finance.metrics import metric_keys
+from ..finance.metrics import extract_metric_qualifiers, metric_keys
 from ..config import YEAR_MIN, YEAR_MAX
 from .metric_phrase import extract_count_metrics, extract_metric
 from ..utils.viet_text import (
@@ -158,6 +158,7 @@ class Parsed:
     metric_wide: str = ""
     metric_variants: list[str] = field(default_factory=list)
     metric_keys: list[str] = field(default_factory=list)
+    metric_qualifiers: dict[str, str] = field(default_factory=dict)
 
 
 class StockMap:
@@ -388,6 +389,8 @@ def parse_question(question: str, stock: StockMap) -> Parsed:
         [p.metric_norm, p.metric_wide, *p.metric_variants],
         expand_derived=False,
     )
+    p.metric_qualifiers = extract_metric_qualifiers(
+        question, p.metric_keys).to_dict()
     return p
 
 

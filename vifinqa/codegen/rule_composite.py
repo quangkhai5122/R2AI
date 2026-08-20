@@ -49,8 +49,9 @@ def try_composite_answer(route: dict, tables: list[dict], encoder=None,
     variants = route.get("metric_variants") or [route.get("metric_norm", "")]
     # a fact carrying its own metric (ratio numerator/denominator) must be matched
     # against THAT metric, not against the whole question's phrase
-    resolved, conf = _resolve_with_own_metrics(facts, tables, variants,
-                                               encoder, min_score)
+    resolved, conf = _resolve_with_own_metrics(
+        facts, tables, variants, encoder, min_score,
+        question=route.get("question", ""))
     if len(resolved) != len(facts) or conf <= 0:
         return CompositeAnswer(ok=False,
                                detail=f"resolved {len(resolved)}/{len(facts)} facts")
@@ -75,13 +76,15 @@ def try_composite_answer(route: dict, tables: list[dict], encoder=None,
                            resolved=resolved)
 
 
-def _resolve_with_own_metrics(facts, tables, variants, encoder, min_score):
+def _resolve_with_own_metrics(facts, tables, variants, encoder, min_score,
+                              question=""):
     """Resolve each fact against its own metric when it has a specific one."""
     from .fact_resolver import resolve_fact
     out = []
     for f in facts:
         own = [f.metric] if f.role in ("numerator", "denominator") and f.metric else variants
-        r = resolve_fact(f, tables, own, encoder, min_score)
+        r = resolve_fact(f, tables, own, encoder, min_score,
+                         question=question)
         if r is None:
             return out, 0.0
         out.append(r)

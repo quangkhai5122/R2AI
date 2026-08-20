@@ -15,9 +15,11 @@ class _C:
     """Minimal stand-in for retrieval.shortlist.Candidate."""
 
     def __init__(self, var="df1", label="Doanh thu thuần", col=1,
-                 col_name="2023", value=100.0, unit_scale=1e6, score=80.0):
+                 col_name="2023", value=100.0, unit_scale=1e6, score=80.0,
+                 row=1):
         self.var, self.label, self.col, self.col_name = var, label, col, col_name
         self.value, self.unit_scale, self.score = value, unit_scale, score
+        self.row = row
         self.report_id, self.table_pos, self.code = "AAA_2023", 1, "10"
 
 
@@ -64,11 +66,12 @@ class SynthesisTests(unittest.TestCase):
         self.assertAlmostEqual(ans, 0.1, places=6)
         self.assertIn("/ 1e+09", q)
 
-    def test_generated_query_always_pins_column_and_disables_regex(self):
-        c = _C(label="Doanh thu (thuần)", col=3)
+    def test_generated_query_always_pins_column_and_exact_label(self):
+        c = _C(label="Doanh thu (thuần)", col=3, row=7)
         _a, q, _e = synthesize(Selection("lookup", [1]), [c], self.route)
-        self.assertIn("regex=False", q)
-        self.assertIn("na=False", q)
+        self.assertIn("['row'] == 7", q)
+        self.assertIn(".str.strip().eq(", q)
+        self.assertNotIn("str.contains", q)
         self.assertIn("['col'] == 3", q)
         compile(q, "<q>", "eval")          # single expression, grader-compatible
 

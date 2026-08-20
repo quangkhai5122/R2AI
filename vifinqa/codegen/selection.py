@@ -26,6 +26,7 @@ import json
 import re
 from dataclasses import dataclass
 
+from ..finance.metrics import metric_keys, metric_uses_absolute_value
 from .units import check_answer_unit, percent_from_cell, cell_is_already_percent
 
 # ops the synthesiser can execute from selected cells
@@ -100,17 +101,24 @@ def synthesize(sel: Selection, candidates, route: dict):
     output_type = route.get("output_type", "number")
 
     def vnd(c):
-        return float(c.value) * float(c.unit_scale)
+        value = float(c.value) * float(c.unit_scale)
+        keys = metric_keys([c.label], expand_derived=False)
+        return abs(value) if metric_uses_absolute_value(c.label, keys) else value
 
     def expr(c):
-        # WE write the addressing: exact column, literal substring, regex off
-        frag = re.sub(r"\s+", " ", str(c.label)).strip()[:40]
-        return (f"float({c.var}.loc[{c.var}['label'].str.contains({frag!r}, "
-                f"case=False, regex=False, na=False) & ({c.var}['col'] == {c.col}), "
+        # The shortlist already selected one concrete row; preserve that exact
+        # identity instead of reintroducing a parent/child substring collision.
+        label = re.sub(r"\s+", " ", str(c.label)).strip()
+        return (f"float({c.var}.loc[({c.var}['row'] == {c.row}) "
+                f"& {c.var}['label'].str.strip().eq({label!r}) "
+                f"& ({c.var}['col'] == {c.col}), "
                 f"'value'].iloc[0])")
 
     def expr_vnd(c):
-        return f"{expr(c)} * {float(c.unit_scale):g}"
+        value_expr = f"{expr(c)} * {float(c.unit_scale):g}"
+        keys = metric_keys([c.label], expand_derived=False)
+        return (f"abs({value_expr})"
+                if metric_uses_absolute_value(c.label, keys) else value_expr)
 
     try:
         answer, query = _apply(sel.op, picks, q_scale, output_type,

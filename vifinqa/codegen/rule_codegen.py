@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from ..finance.metrics import metric_uses_absolute_value
 from ..utils.viet_text import label_metric_score, norm
 from ..retrieval.serialize import df_roundtrip
 from ..retrieval.shortlist import build_shortlist
@@ -76,8 +77,9 @@ def try_rule_answer(route: dict, tables: list[dict], min_label: float = 62.0,
     # to year + VAS-code evidence) could score ~56 here and be refused, leaving
     # the question empty. Reusing the shortlist removes that whole class of
     # silent misses and keeps rule + prompt looking at the same candidates.
-    cands = build_shortlist(tables, variants, years, top_n=6,
-                            min_score=min_label)
+    cands = build_shortlist(
+        tables, variants, years, top_n=6, min_score=min_label,
+        question=route.get("question", ""))
     # magnitude sanity: a money figure asked in triệu/tỷ đồng is essentially
     # never < 1e6 VND -> such a candidate points at a wrong-unit table
     if q_scale >= 1e6:
@@ -88,11 +90,11 @@ def try_rule_answer(route: dict, tables: list[dict], min_label: float = 62.0,
 
     best_c = cands[0]
     runner_up = cands[1].score if len(cands) > 1 else 0.0
-    best = (best_c.score, best_c.var, best_c.label, best_c.col, best_c.value,
-            best_c.unit_scale, best_c.lexical, best_c.col_name)
+    best = (best_c.score, best_c.var, best_c.row, best_c.label, best_c.col,
+            best_c.value, best_c.unit_scale, best_c.lexical, best_c.col_name)
 
-    _score, var, label, col, value, us, s_lab = best[:7]
-    col_name = best[7] if len(best) > 7 else ""
+    _score, var, row, label, col, value, us, s_lab = best[:8]
+    col_name = best[8] if len(best) > 8 else ""
     gap = _score - runner_up if runner_up > 0 else _score
     ambiguous = gap < AMBIGUOUS_MARGIN
     if unambiguous_margin and gap < unambiguous_margin:
@@ -105,15 +107,22 @@ def try_rule_answer(route: dict, tables: list[dict], min_label: float = 62.0,
         answer = round(percent_from_cell(value, label, col_name), 2)
         scale_expr = ("" if cell_is_already_percent(label, col_name, value)
                       else " * 100")
-        query = (f"round(float({var}.loc[{var}['label'].str.contains("
-                 f"{_distinct_fragment(label)!r}, case=False, regex=False, na=False) "
-                 f"& ({var}['col'] == {col}), 'value'].iloc[0]){scale_expr}, 2)")
+        cell = (f"float({var}.loc[({var}['row'] == {row}) "
+                f"& {var}['label'].str.strip().eq({label!r}) "
+                f"& ({var}['col'] == {col}), 'value'].iloc[0])")
+        query = f"round({cell}{scale_expr}, 2)"
     else:
-        answer = round(value * us / q_scale, 2)
-        query = (f"round(float({var}.loc[{var}['label'].str.contains("
-                 f"{_distinct_fragment(label)!r}, case=False, regex=False, na=False) "
-                 f"& ({var}['col'] == {col}), 'value'].iloc[0]) "
-                 f"* {us:g} / {q_scale:g}, 2)")
+        absolute = metric_uses_absolute_value(
+            " ".join((route.get("question", ""), metric)),
+            route.get("metric_keys") or ())
+        raw_value = abs(value) if absolute else value
+        answer = round(raw_value * us / q_scale, 2)
+        cell = (f"float({var}.loc[({var}['row'] == {row}) "
+                f"& {var}['label'].str.strip().eq({label!r}) "
+                f"& ({var}['col'] == {col}), 'value'].iloc[0])")
+        if absolute:
+            cell = f"abs({cell})"
+        query = f"round({cell} * {us:g} / {q_scale:g}, 2)"
     warn = check_answer_unit(answer, output_type)
     # a near-tie stays answerable but must NOT be trusted enough for --rule-first
     # to skip the LLM (the shortlist gives the model a real chance to do better)
@@ -125,9 +134,3 @@ def try_rule_answer(route: dict, tables: list[dict], min_label: float = 62.0,
                       detail=f"label='{label}' fuzz={s_lab:.0f} gap={gap:.0f}"
                              + (" AMBIGUOUS" if ambiguous else "")
                              + (f" | UNIT-WARN: {warn}" if warn else ""))
-
-
-def _distinct_fragment(label: str, max_len: int = 40) -> str:
-    """A stable substring of the label for str.contains (avoid regex chars)."""
-    s = re.sub(r"\s+", " ", str(label)).strip()
-    return s[:max_len]

@@ -122,13 +122,45 @@ class ShortlistTests(unittest.TestCase):
     def test_qualifier_mismatch_is_penalised(self):
         cands = build_shortlist(self.tables, ["tra truoc cho nguoi ban ngan han"], [2024])
         labels = [c.label for c in cands]
-        self.assertLess(labels.index("Trả trước cho người bán"),
-                        labels.index("Trả trước cho người bán dài hạn"))
+        self.assertIn("Trả trước cho người bán", labels)
+        self.assertNotIn("Trả trước cho người bán dài hạn", labels)
 
     def test_render_is_compact_and_safe_when_empty(self):
         self.assertIn("no candidate row", render_shortlist([]))
         self.assertIn("df1", render_shortlist(
             build_shortlist(self.tables, ["tra truoc cho nguoi ban"], [2024])))
+
+    def test_canonical_child_beats_lexical_parent(self):
+        rows = [
+            {"row": 1, "label": "Tien gui va vay cac TCTD khac", "code": "",
+             "col": 1, "col_name": "So cuoi nam", "value": 100.0,
+             "unit_scale": 1e6},
+            {"row": 2, "label": "Vay cac TCTD khac", "code": "",
+             "col": 1, "col_name": "So cuoi nam", "value": 40.0,
+             "unit_scale": 1e6},
+        ]
+        tables = [{"var": "df1", "report_id": "R", "table_pos": 3,
+                   "report_year": 2024,
+                   "csv_text": pd.DataFrame(rows).to_csv(index=False)}]
+        cands = build_shortlist(
+            tables, ["vay cac TCTD khac"], [2024],
+            question="So du vay cac TCTD khac cuoi nam 2024")
+        self.assertEqual(cands[0].label, "Vay cac TCTD khac")
+
+    def test_opening_qualifier_selects_opening_column(self):
+        rows = [
+            {"row": 1, "label": "No ngan han", "code": "310", "col": 1,
+             "col_name": "So cuoi nam", "value": 200.0, "unit_scale": 1e6},
+            {"row": 1, "label": "No ngan han", "code": "310", "col": 2,
+             "col_name": "So dau nam", "value": 120.0, "unit_scale": 1e6},
+        ]
+        tables = [{"var": "df1", "report_id": "R", "table_pos": 3,
+                   "report_year": 2024,
+                   "csv_text": pd.DataFrame(rows).to_csv(index=False)}]
+        cands = build_shortlist(
+            tables, ["no ngan han"], [2024],
+            question="No ngan han dau nam 2024 la bao nhieu?")
+        self.assertEqual(cands[0].col_name, "So dau nam")
 
 
 if __name__ == "__main__":

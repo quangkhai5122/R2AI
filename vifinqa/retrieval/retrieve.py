@@ -176,6 +176,7 @@ def _row_scores(route, metas: list[dict], order: list[int],
         blocks, variants, getattr(route, "years", []) or [],
         top_n=min(80, max(12, len(blocks) * 2)),
         min_score=35.0,
+        question=getattr(route, "question", "") or "",
     )
     out: dict[tuple[str, int], float] = {}
     for c in shortlist:

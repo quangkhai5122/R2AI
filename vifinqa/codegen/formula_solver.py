@@ -751,7 +751,9 @@ def _evaluate_condition(cond: Condition, ticker: str, year: int | None, route: d
 
     fact = _FactView({"ticker": ticker, "year": year, "doc_type": route.get("doc_type"),
                       "metric": cond.metric})
-    r = resolve_fact(fact, tables, list(cond.variants), encoder, min_score)
+    r = resolve_fact(
+        fact, tables, list(cond.variants), encoder, min_score,
+        question=route.get("question", ""))
     if (r is None or not _direct_metric_accepts(cond, r, route)
             or not _resolved_supports_year(r, year)
             or not _resolved_value_sane(r)):
@@ -801,7 +803,9 @@ def _evaluate_formula(spec: FormulaSpec, ticker: str, year: int | None, route: d
     for op in spec.operands:
         fact = _FactView({"ticker": ticker, "year": year, "doc_type": route.get("doc_type"),
                           "metric": op.metric})
-        r = resolve_fact(fact, tables, list(op.variants), encoder, min_score)
+        r = resolve_fact(
+            fact, tables, list(op.variants), encoder, min_score,
+            question=route.get("question", ""))
         if (r is None or not _operand_accepts(op, r)
                 or not _resolved_supports_year(r, year)
                 or not _resolved_value_sane(r)):
@@ -1046,7 +1050,9 @@ def _maybe_top_n_population(question: str, tickers: list[str], year: int | None,
     for ticker in tickers:
         fact = _FactView({"ticker": ticker, "year": year, "doc_type": route.get("doc_type"),
                           "metric": "doanh thu thuan"})
-        r = resolve_fact(fact, tables, ["doanh thu thuan"], encoder, min_score)
+        r = resolve_fact(
+            fact, tables, ["doanh thu thuan"], encoder, min_score,
+            question=route.get("question", ""))
         if r is None:
             return None
         resolved.append(r)

@@ -97,6 +97,9 @@ class FactResolverTests(unittest.TestCase):
         self.assertEqual((a.var, b.var), ("df1", "df2"))
         self.assertAlmostEqual(a.value_vnd, 100.0 * 1e6)
         self.assertAlmostEqual(b.value_vnd, 250.0 * 1e6)
+        self.assertIn("['row'] == 1", a.expr())
+        self.assertIn(".str.strip().eq(", a.expr())
+        self.assertNotIn("str.contains", a.expr())
 
     def test_unknown_ticker_yields_nothing(self):
         self.assertIsNone(resolve_fact(

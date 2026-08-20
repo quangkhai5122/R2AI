@@ -76,7 +76,8 @@ class QuestionBundle:
             variants = self.route.get("metric_variants") or [self.route.get("metric_norm", "")]
             self._shortlist = build_shortlist(
                 self.tables, variants, self.route.get("years") or [],
-                top_n=top_n, encoder=encoder)
+                top_n=top_n, encoder=encoder,
+                question=self.question)
         return self._shortlist
 
     def select_messages(self, encoder=None) -> list[dict]:
