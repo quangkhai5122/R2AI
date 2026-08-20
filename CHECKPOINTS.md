@@ -42,9 +42,11 @@ correct executions out of 1,012 questions. All 1,012 pandas expressions replay
 locally and the source test suite passes (`173 passed`). Generated artifacts
 remain ignored by Git; the hashes above identify the exact local files.
 
-## Candidate - canonical metric dictionary v2 (leaderboard pending)
+## Execution 0.2866 - canonical metric dictionary v2 audited6
 
+- Date: 2026-08-20
 - Branch: `improve_baseline_kien`
+- Source commit: `ef77d55fcdf283750015018488af1524163b3164`
 - Retrieval: `artifacts/retrieval_p2_canonical_v2_qualified_hybrid_w010.jsonl`
 - Rule codegen: `artifacts/codegen_rule_canonical_v2_w010_k15.jsonl`
 - Kaggle output: `kaggle/results-7/codegen_canonical_v2_sel7b.jsonl`
@@ -70,6 +72,25 @@ checkpoint and adds only six table-verified answers: `589, 591, 635, 757, 830,
 838`. All 1,012 submission expressions replay locally; the source suite passes
 (`183 passed`).
 
-This is intentionally recorded as a candidate, not a leaderboard checkpoint.
-Replace this note with measured metrics only after the official submission has
-completed.
+Leaderboard metrics:
+
+```json
+{
+  "TABLES_F2MACRO": 0.4777,
+  "DOCS_F2MACRO": 0.8945,
+  "TABLES_PRECISION": 0.3192,
+  "TABLES_RECALL": 0.6638,
+  "TABLES_MRR5": 0.6427,
+  "DOCS_PRECISION": 0.9484,
+  "DOCS_RECALL": 0.8917,
+  "DOCS_MRR5": 0.9644,
+  "ANSWER_ACCURACY": 0.2866,
+  "EXECUTION_ACCURACY": 0.2866
+}
+```
+
+Against the `0.2806` checkpoint, canonical v2 gains all six audited executions
+(`6/1,012 = 0.00593`) while table F2 rises by `0.0016` and document F2 rises by
+`0.0027`. This confirms the canonical metric dictionary v2 milestone: its
+retrieval changes improve both evidence metrics, and every accepted answer
+change executes correctly on the official grader.
