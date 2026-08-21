@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from ..finance.metrics import metric_keys
+from ..finance.metrics_v2 import expand_variants_v2, profile_keys
 from ..config import YEAR_MIN, YEAR_MAX
 from .metric_phrase import extract_count_metrics, extract_metric
 from ..utils.viet_text import (
@@ -158,6 +159,7 @@ class Parsed:
     metric_wide: str = ""
     metric_variants: list[str] = field(default_factory=list)
     metric_keys: list[str] = field(default_factory=list)
+    metric_profile_keys: list[str] = field(default_factory=list)
 
 
 class StockMap:
@@ -384,6 +386,10 @@ def parse_question(question: str, stock: StockMap) -> Parsed:
         p.metric_variants.append(legacy)
     if not p.metric_norm:
         p.metric_norm = legacy
+    profile_search = [p.metric_norm, p.metric_wide, *p.metric_variants, question]
+    p.metric_profile_keys = profile_keys(profile_search)
+    if p.metric_profile_keys:
+        p.metric_variants = expand_variants_v2(p.metric_variants, question=question)
     p.metric_keys = metric_keys(
         [p.metric_norm, p.metric_wide, *p.metric_variants],
         expand_derived=False,

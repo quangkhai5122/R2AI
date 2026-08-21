@@ -82,14 +82,19 @@ def _tables_for(tables: list[dict], ticker: str, year: int | None) -> list[dict]
 
 
 def resolve_fact(fact, tables: list[dict], metric_variants: list[str],
-                 encoder=None, min_score: float = 62.0) -> ResolvedFact | None:
+                 encoder=None, min_score: float = 62.0,
+                 route: dict | None = None) -> ResolvedFact | None:
     """Locate the cell for one Fact. Returns None when nothing clears min_score."""
     scoped = _tables_for(tables, fact.ticker, fact.year)
     if not scoped:
         return None
     variants = [v for v in (metric_variants or [fact.metric]) if v]
+    # Only production routes that explicitly carry v2 profiles activate the
+    # strict profile gate. Synthetic/legacy callers retain v1 semantics.
+    effective_route = route if route and route.get("metric_profile_keys") else None
     cands = build_shortlist(scoped, variants, [fact.year] if fact.year else [],
-                            top_n=6, encoder=encoder, min_score=min_score)
+                            top_n=6, encoder=encoder, min_score=min_score,
+                            route=effective_route)
     if not cands:
         return None
     best = cands[0]
@@ -121,12 +126,13 @@ def _year_evidence(col_name: str, year: int | None,
 
 
 def resolve_all(facts, tables: list[dict], metric_variants: list[str],
-                encoder=None, min_score: float = 62.0):
+                encoder=None, min_score: float = 62.0,
+                route: dict | None = None):
     """(resolved list, confidence 0..100). Confidence is driven by the WEAKEST
     fact: a composite answer is only as trustworthy as its worst operand."""
     out = []
     for f in facts:
-        r = resolve_fact(f, tables, metric_variants, encoder, min_score)
+        r = resolve_fact(f, tables, metric_variants, encoder, min_score, route=route)
         if r is None:
             return out, 0.0
         out.append(r)

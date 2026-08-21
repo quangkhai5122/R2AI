@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass, asdict
 
 from ..finance.metrics import code_expectation, expand_metric_variants
+from ..finance.metrics_v2 import best_row_profile, expand_variants_v2
 from ..router.metric_phrase import has_qualifier
 from ..utils.viet_text import label_metric_score, norm
 from .serialize import df_roundtrip
@@ -45,13 +46,17 @@ class Candidate:
 
 def build_shortlist(tables: list[dict], metric_variants: list[str],
                     years: list[int] | None = None, top_n: int = 8,
-                    encoder=None, min_score: float = 35.0) -> list[Candidate]:
+                    encoder=None, min_score: float = 35.0,
+                    route: dict | None = None) -> list[Candidate]:
     """tables: bundle tables ({var, report_id, table_pos, csv_text, ...}).
 
     Returns the best `top_n` (label, column) cells across all tables, sorted by
     descending score. One entry per (table, label, chosen column).
     """
     metric_variants = expand_metric_variants(m for m in metric_variants if m)
+    if route and route.get("metric_profile_keys"):
+        metric_variants = expand_variants_v2(
+            metric_variants, question=route.get("question", ""))
     if not metric_variants:
         return []
     want_qual = _qualifiers_in(metric_variants[0])
@@ -90,6 +95,11 @@ def build_shortlist(tables: list[dict], metric_variants: list[str],
             if pick is None:
                 continue
             row_i, col, col_name, value, unit_scale, code = pick
+            if route and route.get("metric_profile_keys"):
+                profile, profile_bonus, _reason = best_row_profile(route, label, code, col_name)
+                if profile is None:
+                    continue
+                score += profile_bonus
             # A column header naming the asked year is hard evidence. A header
             # naming a DIFFERENT year is evidence of the WRONG period, which
             # silently corrupts multi-company comparisons (one company read at

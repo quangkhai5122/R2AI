@@ -103,6 +103,129 @@ python scripts/02_retrieve.py --out artifacts/retrieval.jsonl
 - ~5 phút. **Đây là bước hay bị quên nhất** — mọi thay đổi router/metric/plan
   đều nằm trong file này.
 - Smoke: thêm `--limit 150`.
+- `legacy` vẫn là mặc định để không âm thầm thay ranking của checkpoint.
+
+**Advanced retrieval v1 (opt-in, chưa dùng để thay checkpoint 0.2806):**
+
+```powershell
+# RRF lexical/schema ablation - chạy được trước khi có dense index
+python scripts/02_retrieve.py --retrieval-mode rrf `
+  --out artifacts/retrieval_rrf_lexical.jsonl
+
+# Một lần: tạo BGE-M3 row-label cache trong artifacts/store/label_index
+python scripts/10_build_label_index.py --device cuda
+
+# Hybrid BM25 + lexical/schema + BGE-M3 bằng Reciprocal Rank Fusion
+python scripts/02_retrieve.py --retrieval-mode rrf --use-dense --dense-required `
+  --out artifacts/retrieval_rrf_bge_m3.jsonl
+```
+
+Mỗi output có sidecar `<retrieval>.meta.json`; candidate RRF ghi `channel_ranks`,
+`fusion_score` và `dense_score` để audit. Không ghi đè `artifacts/retrieval.jsonl`
+cho đến khi đã khôi phục artifact 0.2806 và hoàn tất retrieval-only regression.
+
+
+**A/B web từ checkpoint 0.2806 đã khôi phục:**
+
+```powershell
+# Rerank-only: khóa route và đúng pool top-20 của checkpoint; chưa dùng dense.
+.venv\Scripts\python.exe scripts/02_retrieve.py `
+  --retrieval-mode rrf `
+  --route-source artifacts/artifacts/retrieval_p2_canonical_qualified_hybrid_w010.jsonl `
+  --freeze-candidate-pool `
+  --store-dir artifacts/artifacts/store `
+  --out artifacts/candidates/retrieval_02806_rrf_frozenpool_full.jsonl
+
+# Giữ nguyên codegen 0.2806, chỉ thay relevant_tables/docs.
+.venv\Scripts\python.exe scripts/05_build_submission.py `
+  --retrieval artifacts/candidates/retrieval_02806_rrf_frozenpool_full.jsonl `
+  --codegen artifacts/artifacts/codegen_result6_canonical_direct24_semantic4_w010.jsonl `
+  --store-dir artifacts/artifacts/store `
+  --out-dir artifacts/candidates/submission_02806_rrf_frozenpool_v1
+```
+
+File nộp là
+`artifacts/candidates/submission_02806_rrf_frozenpool_v1/submission.zip`.
+Manifest SHA/provenance nằm cạnh ZIP. Với lượt này ANSWER/EXEC phải giữ `.2806`;
+chỉ đọc thay đổi TABLES/DOCS để quyết định giữ hay loại RRF.
+
+
+**Canonical Metric v2 — batch final hiện tại:**
+
+- Version: `canonical_metric_v2_2026_08_18f`.
+- Coverage v1 hoặc v2: **945/1.012**; unresolved: **67**.
+- 67 câu còn lại chủ yếu là nested selector, entity-specific note hoặc scenario;
+  không tự gán profile direct để tránh false-positive.
+- Full batch đã chạy với `k=15`, sau đó merge fill-only trên checkpoint 0.2806.
+- Candidate cuối chỉ thay các ID `757, 830, 847`; 1.009 record lõi giữ nguyên.
+
+File nộp:
+`artifacts/candidates/submission_02806_metric_v2h_fill_k15/submission.zip`
+
+SHA-256:
+`035549e2ee3da7c0f6e4ac66dbdbe00bf6d6b8be46a9d5cac50104735db6c8d8`
+
+Manifest:
+`artifacts/candidates/submission_02806_metric_v2h_fill_k15/candidate-manifest.json`
+
+
+Leaderboard result: `ANSWER=EXEC=.2846`, equivalent to 144/506 correct and
+`+2` correct over checkpoint `.2806`. `v2b` and `v2h` are grader-identical;
+do not spend another submission slot comparing them. Of IDs `757,830,847`,
+two add a correct answer and one is neutral, but aggregate score does not reveal
+which one. Dictionary-only work is now secondary to nested typed formula/IR.
+
+**Leaderboard result for the submitted typed-IR ZIP:** `ANSWER=EXEC=.2905`
+(147/506 correct, +3 over `.2846`). Retrieval metrics were `TABLES_F2=.4668`,
+`DOCS_F2=.8948`; answer gains came from the 19 typed-IR fills, while table F2
+regressed versus the frozen retrieval checkpoint. Keep this result as the
+answer control and test retrieval separately.
+
+**Typed IR fill candidate (local, not submitted):**
+
+- Full deterministic run: `artifacts/candidates/codegen_typed_ir_integrated_v5_full_k15.jsonl`
+- Fill-only merge: `artifacts/candidates/codegen_02806_typed_ir_fill_v5_k15.jsonl`
+- Submission ZIP: `artifacts/candidates/submission_02806_typed_ir_fill_v5_k15/submission.zip`
+- Accepted IDs: `822, 832, 860, 866, 874, 876, 879, 883, 900, 906, 925, 928, 929, 933, 953, 974, 985, 989, 999`
+- ZIP SHA-256: `e9e6bf5564263062ed4d17979206181079d34a8d4f9c1cc3a2b8df24dce51bc6`
+
+Run the candidate with `--typed-ir-fill` only as a source batch. For a
+submission, always merge fill-only against the frozen `.2846` codegen and run
+the strict build/replay step. The direct planner is deliberately fail-closed
+for selector/target and ratio questions; the current candidate has no nested
+IR rows after the final guard pass.
+
+
+**Canonical metric v2 batch fill candidate:**
+
+```powershell
+# Audit profile coverage
+.venv\Scripts\python.exe scripts/15_metric_v2_audit.py `
+  --codegen artifacts/candidates/codegen_metric_v2b_full_k15.jsonl `
+  --out artifacts/candidates/metric_v2_audit_after_batch.json
+
+# Candidate đã tạo; không cần chạy lại nếu chỉ muốn nộp
+```
+
+File nộp:
+`artifacts/candidates/submission_02806_metric_v2b_fill_k15/submission.zip`
+
+Candidate này giữ nguyên checkpoint và chỉ fill 3 `source=none` bằng resolver v2:
+IDs `757, 830, 847`. ZIP SHA-256:
+`30e56e5b14e463411a73cf52150a41956149f8aab63c3ad08b9b61aa92c804b7`.
+Manifest nằm cạnh ZIP. `ANSWER/EXEC` kỳ vọng tăng hoặc giữ; `TABLES/DOCS` dùng
+retrieval checkpoint, chỉ thêm evidence tables cho 3 câu đổi answer.
+
+**Next A/B candidates after `.2905`:**
+
+- Exact-cell verifier only, v2h retrieval: `artifacts/candidates/submission_02905_exact_cell_v8_k15/submission.zip`
+- Retrieval recovery only, old `.2806` pool: `artifacts/candidates/submission_02905_typed_ir_oldretr_k5/submission.zip`
+- Combined recommendation: `artifacts/candidates/submission_02905_exact_cell_oldretr_k5/submission.zip`
+- Combined ZIP SHA-256: `fff0c707b4f8a1e850ca410654e842a73f17089342cf26c2c26216cb523f1b25`
+
+The combined candidate keeps the `.2905` answers, applies the exact-cell
+verifier correction for ID `53`, and restores the `.2806` retrieval pool. It
+is unsubmitted and should be treated as an A/B, not as a confirmed score.
 
 ### 2.3 Rule baseline (không cần GPU)
 

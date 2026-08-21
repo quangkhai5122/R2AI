@@ -77,7 +77,7 @@ def try_rule_answer(route: dict, tables: list[dict], min_label: float = 62.0,
     # the question empty. Reusing the shortlist removes that whole class of
     # silent misses and keeps rule + prompt looking at the same candidates.
     cands = build_shortlist(tables, variants, years, top_n=6,
-                            min_score=min_label)
+                            min_score=min_label, route=route)
     # magnitude sanity: a money figure asked in triệu/tỷ đồng is essentially
     # never < 1e6 VND -> such a candidate points at a wrong-unit table
     if q_scale >= 1e6:

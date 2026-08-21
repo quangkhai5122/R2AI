@@ -8,3 +8,5 @@ rapidfuzz>=3.0
 tqdm>=4.66
 # Kaggle upload CLI (optional): pip install kaggle
 # vLLM is NOT needed locally — it is installed inside the Kaggle notebook.
+# Dense retrieval (optional; install where BGE-M3 inference runs):
+# sentence-transformers>=3.0,<4

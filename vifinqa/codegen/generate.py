@@ -25,6 +25,10 @@ from .prompts import SYSTEM, build_user, SELECT_SYSTEM, build_select_user
 from .rule_codegen import try_rule_answer
 from .rule_composite import try_composite_answer
 from .formula_solver import try_formula_answer
+from .nested_ir import try_nested_formula_ir
+from .direct_ranking_ir import try_direct_ranking_ir
+from .typed_ir import try_typed_ir_answer
+from .exact_cell import resolve_exact_cell
 from .arbitrate import arbitrate
 from .selection import parse_selection, synthesize, confidence as sel_conf
 from .semantic import (
@@ -65,7 +69,10 @@ class QuestionBundle:
                 "var": var, "report_id": c["report_id"],
                 "table_pos": int(c["table_pos"]), "page": c.get("page"),
                 "unit_scale": us, "unit_source": m.get("unit_source", "none"),
-                "report_year": int(m["year"]), "csv_text": csv_text,
+                "report_year": int(m["year"]),
+                "context": str(m.get("context") or ""),
+                "grid_json": str(m.get("grid_json") or ""),
+                "csv_text": csv_text,
             })
             self.dfs[var] = df_roundtrip(csv_text)
 
@@ -76,7 +83,7 @@ class QuestionBundle:
             variants = self.route.get("metric_variants") or [self.route.get("metric_norm", "")]
             self._shortlist = build_shortlist(
                 self.tables, variants, self.route.get("years") or [],
-                top_n=top_n, encoder=encoder)
+                top_n=top_n, encoder=encoder, route=self.route)
         return self._shortlist
 
     def select_messages(self, encoder=None) -> list[dict]:
@@ -162,7 +169,8 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
                 checkpoint_every: int = 32, resume: bool = True,
                 time_budget_s: float = 0.0, run_signature: str = "",
                 use_dense: bool = False, dense_model: str = "",
-                llm_target: str = "all", llm_mode: str = "code") -> None:
+                llm_target: str = "all", llm_mode: str = "code",
+                typed_ir_fill: bool = False) -> None:
     """Crash-safe codegen.
 
     Order of operations (important on Kaggle where a session can die at any time):
@@ -219,7 +227,7 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
             results[b.id] = prev[b.id]
             rule_conf[b.id] = 0.0
             continue
-        r = _rule_result(b, encoder) if use_rule_fallback else None
+        r = _rule_result(b, encoder, typed_ir_fill=typed_ir_fill) if use_rule_fallback else None
         results[b.id] = r if r is not None else _empty_result(b, "rule found nothing")
         rule_conf[b.id] = r["detail_conf"] if r else 0.0
         if r is not None:
@@ -461,7 +469,8 @@ def _arbitrated(b: QuestionBundle, rule: dict | None, llm_rec: dict,
     return out
 
 
-def _rule_result(b: QuestionBundle, encoder=None) -> dict | None:
+def _rule_result(b: QuestionBundle, encoder=None,
+                 typed_ir_fill: bool = False) -> dict | None:
     """Deterministic answer: formula/composite solvers, then lookup rule."""
     fa = try_formula_answer(b.route, b.tables, encoder=encoder)
     if fa.ok:
@@ -485,6 +494,16 @@ def _rule_result(b: QuestionBundle, encoder=None) -> dict | None:
 
     ra = try_rule_answer(b.route, b.tables)
     if not ra.ok:
+        exact = _exact_cell_result(b)
+        if exact is not None:
+            return exact
+        single = _single_fact_lookup_result(b)
+        if single is not None:
+            return single
+        if typed_ir_fill:
+            out = _typed_ir_result(b, encoder)
+            if out is not None:
+                return out
         return None
     ex = _run_validated(b, ra.pandas_query)
     if ex["status"] != "ok":
@@ -494,6 +513,90 @@ def _rule_result(b: QuestionBundle, encoder=None) -> dict | None:
     out["detail"] = ra.detail
     out["detail_conf"] = ra.confidence
     return out
+
+
+def _exact_cell_result(b: QuestionBundle) -> dict | None:
+    """Use row x column x context linking for canonical note-table profiles."""
+    cell = resolve_exact_cell(b.route, b.tables)
+    if cell is None:
+        return None
+    route = b.route
+    query = cell.expr(float(route.get("unit_scale") or 1.0),
+                      route.get("output_type", "number"))
+    ex = _run_validated(b, query)
+    if ex["status"] != "ok":
+        return None
+    out = _final(b, round(ex["value"], 2), query,
+                 "rule_exact_cell", semantic=ex.get("semantic"))
+    out["detail"] = (f"exact_cell row={cell.label!r} column={cell.col_name!r} "
+                     f"score={cell.score:.1f}")
+    out["detail_conf"] = min(99.0, cell.score)
+    return out
+
+
+def _single_fact_lookup_result(b: QuestionBundle) -> dict | None:
+    """Recover a lookup that the router over-classified as a one-fact composite.
+
+    Some questions contain words such as "cao nhất" or "tổng" but ask for one
+    company/year cell. The planner labels these as ranking/sum/average even
+    though there is only one fact. Reusing the normal lookup matcher is safe
+    here because the route must have exactly one ticker, one year, and one
+    planned fact; the expression is still replayed and semantically grounded.
+    """
+    route = getattr(b, "route", {})
+    plan = route.get("plan") or {}
+    facts = plan.get("facts") or []
+    op = plan.get("op", "lookup")
+    if (op not in {"ranking", "sum", "average"} or len(facts) != 1
+            or len(route.get("tickers") or []) != 1
+            or len(route.get("years") or []) != 1):
+        return None
+    lookup_route = dict(route)
+    lookup_route["plan"] = dict(plan)
+    lookup_route["plan"]["op"] = "lookup"
+    fact_metric = facts[0].get("metric")
+    if fact_metric:
+        lookup_route["metric_variants"] = [fact_metric]
+    ra = try_rule_answer(lookup_route, b.tables)
+    if not ra.ok:
+        return None
+    ex = _run_validated(b, ra.pandas_query)
+    if ex["status"] != "ok" or abs(ex["value"] - ra.answer) > 0.011:
+        return None
+    out = _final(b, round(ex["value"], 2), ra.pandas_query,
+                 "rule_single_fact", semantic=ex.get("semantic"))
+    out["detail"] = f"single_fact_lookup from={op} | {ra.detail}"
+    out["detail_conf"] = ra.confidence
+    return out
+
+
+def _typed_ir_result(b: QuestionBundle, encoder=None) -> dict | None:
+    """Try the fail-closed IR planners in increasing generality.
+
+    The nested and direct ranking planners need to preserve every selector
+    operand as evidence, so they must run before the generic flat planner. A
+    planner result is accepted only after replaying its generated expression;
+    this keeps the fill path subject to the same execution and grounding
+    guards as every other deterministic answer.
+    """
+    planners = (
+        ("typed_ir_ranking", try_direct_ranking_ir),
+        ("typed_ir_nested", try_nested_formula_ir),
+        ("typed_ir", try_typed_ir_answer),
+    )
+    for source, planner in planners:
+        ir = planner(b.route, b.tables, encoder=encoder)
+        if not ir.ok:
+            continue
+        ex = _run_validated(b, ir.pandas_query)
+        if ex["status"] != "ok" or abs(ex["value"] - ir.answer) > 0.011:
+            continue
+        out = _final(b, round(ex["value"], 2), ir.pandas_query, source,
+                     semantic=ex.get("semantic"))
+        out["detail"] = ir.detail
+        out["detail_conf"] = ir.confidence
+        return out
+    return None
 
 
 def _final(b: QuestionBundle, answer: float, code: str, source: str,

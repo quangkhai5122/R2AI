@@ -26,11 +26,14 @@ def main():
     ap.add_argument("--out", default=str(config.CODEGEN_JSONL))
     ap.add_argument("--k", type=int, default=config.CODEGEN_K)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--typed-ir-fill", action="store_true",
+                    help="after existing solvers fail, try typed IR fill-only")
     args = ap.parse_args()
 
     run_codegen(Path(args.retrieval), Path(args.store_dir), Path(args.out),
                 client=NoLLM(), k=args.k, limit=args.limit,
-                use_rule_fallback=True)
+                use_rule_fallback=True,
+                typed_ir_fill=args.typed_ir_fill)
 
 
 if __name__ == "__main__":

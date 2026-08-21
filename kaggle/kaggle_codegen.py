@@ -108,6 +108,7 @@ def run_signature(args, manifest_hash: str) -> str:
         "debug_rounds": args.debug_rounds,
         "k": args.k,
         "rule_first": args.rule_first,
+        "typed_ir_fill": getattr(args, "typed_ir_fill", False),
         "llm_target": args.llm_target,
         "llm_mode": args.llm_mode,
         # dense matching changes the prompt shortlist -> a different semantic run
@@ -147,6 +148,8 @@ def main():
                     help="which questions the LLM should spend GPU time on")
     ap.add_argument("--rule-first", action="store_true",
                     help="skip the LLM for high-confidence rule matches (faster)")
+    ap.add_argument("--typed-ir-fill", action="store_true",
+                    help="after existing deterministic solvers fail, try typed IR planners")
     ap.add_argument("--checkpoint-every", type=int, default=32,
                     help="flush results to --out every N questions (crash safety)")
     ap.add_argument("--time-budget-min", type=float, default=420,
@@ -227,6 +230,7 @@ def main():
         use_dense=args.use_dense, dense_model=args.dense_model,
         llm_target=args.llm_target,
         llm_mode=args.llm_mode,
+        typed_ir_fill=args.typed_ir_fill,
         run_signature=signature,
     )
     print(f"OK -> {args.out}")

@@ -54,6 +54,7 @@ def main():
                        batch_size=args.batch_size)
     enc.build_cache(labels, out_dir)
     print(f"done -> {out_dir}")
+    print("index metadata:", enc.describe())
     print("payload: rerun scripts/04_make_kaggle_payload.py so Kaggle gets it")
 
 
