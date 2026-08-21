@@ -1,107 +1,92 @@
-# Kaggle NF4 fix and runbook
+# Kaggle runtime NF4 - canonical status
 
-## Outcome
+## Current outcome
 
-The schema-9 clean payload now uses the unquantized
-`Qwen/Qwen2.5-Coder-7B-Instruct` checkpoint and quantizes it at load time with
-bitsandbytes NF4. The frozen configuration remains Selection v2, `k=0`,
-`n=2`, temperature `0.2`, 512 output tokens, seed 13, and `llm_target=all`.
-The model has 7.61B parameters, below the organizer-confirmed 15B ceiling.
+The clean schema-9 run completed with the base
+Qwen/Qwen2.5-Coder-14B-Instruct checkpoint quantized at load time by
+bitsandbytes NF4. AWQ/GPTQ was not used.
 
-Do not fix the original failure by installing `gptqmodel`. That would change
-the runtime to a different pre-quantized backend and add a compatibility-heavy
-dependency outside this baseline. The clean launcher rejects AWQ/GPTQ model
-names so this failure cannot silently return.
+Frozen semantic settings are Selection v2, k=0, n=2, temperature=0.2,
+max_tokens=512, max_input_tokens=5000, batch_size=4, seed=13, and
+llm_target=all.
 
-## Root cause and additional audit findings
+## Historical AWQ incident
 
-The failed notebook selected
-`Qwen/Qwen2.5-Coder-7B-Instruct-AWQ` but did not pass `--load-4bit`. The current
-Transformers loader selected a quantized-model backend that required
-`gptqmodel`, which was absent in the Kaggle image.
+An earlier notebook selected a pre-quantized 7B AWQ checkpoint. Transformers
+then required gptqmodel, which was absent. Installing gptqmodel was rejected
+because it would create a different backend and a compatibility-heavy runtime.
 
-The audit also found and fixed these independent risks:
+The canonical fix is to use the base checkpoint and pass load_4bit so
+bitsandbytes performs NF4 quantization at runtime. The clean NF4 launcher rejects
+AWQ/GPTQ model names.
 
-1. The notebook had no dependency, CUDA, GPU, or model-access preflight.
-2. It launched all 1,012 questions without an exact-path smoke test.
-3. A time-budget checkpoint was structurally submittable even when many LLM
-   attempts were still pending. The final validator now refuses submission
-   until every expected attempt is complete.
-4. The payload environment fingerprint describes the local build host, not the
-   Kaggle GPU runtime. The notebook now writes separate runtime reports with
-   package, CUDA, GPU, model, quantization, and payload-manifest provenance.
-5. The old notebook did not verify unique IDs, question alignment, finite
-   answers, a single run signature, Selection traces, archive layout, or the
-   final ZIP hash.
-6. An initial packaging approach replaced the canonical verifier under the
-   same module name and could self-import. The final payload keeps the verifier
-   and NF4 launcher side by side; a regression test imports and verifies the
-   launcher from the built payload itself.
+This section is incident history. It does not mean the completed run used 7B or
+AWQ.
 
-## Final files
+## Canonical files
 
-- Payload builder: `scripts/59_make_clean_payload_v4.py`
-- Kaggle NF4 launcher: `kaggle/kaggle_clean_codegen_nf4.py`
-- Checkpoint validator: `kaggle/validate_clean_codegen.py`
-- Frozen run config: `configs/clean_canonical_baseline_v1/b1_select_v2_7b_nf4.json`
-- Notebook to import: `kaggle/vifinqa-clean-canonical-v1-nf4-v2.ipynb`
-- Built payload: `artifacts/clean_v1/kaggle_payload`
+- payload builder: scripts/59_make_clean_payload_v5.py;
+- NF4 launcher: kaggle/kaggle_clean_codegen_nf4.py;
+- validator source: kaggle/validate_clean_codegen_v2.py;
+- run config:
+  configs/clean_canonical_baseline_v1/b1_select_v2_14b_nf4.json;
+- notebook: kaggle/vifinqa-clean-canonical-b1-14b-nf4.ipynb;
+- completed run: artifacts/clean_v1/b1_nf4;
+- run record:
+  experiments/clean_canonical_baseline_v1/runs/b1_14b_nf4_2026-08-21.json.
 
-The earlier `59_make_clean_payload_v3.py` and notebook without the `-v2`
-suffix are superseded and must not be used.
+Earlier v3/v4 payload builders and old clean-canonical notebooks are historical
+and must not be used.
 
-## Rebuild and upload a new Kaggle dataset version
+## Rebuild and upload
 
-Run from the repository root:
+    python scripts/59_make_clean_payload_v5.py --dataset-id lequangkhai5122005/vifinqa-clean-canonical-v1
+    kaggle datasets version -p artifacts/clean_v1/kaggle_payload -m "schema9: Qwen 14B runtime NF4 canonical" --dir-mode zip
 
-```powershell
-python scripts\59_make_clean_payload_v4.py --dataset-id lequangkhai5122005/vifinqa-clean-canonical-v1
-kaggle datasets version -p artifacts\clean_v1\kaggle_payload -m "schema9: HF Qwen 7B + bitsandbytes NF4 + fail-closed QA" --dir-mode zip
-```
+Import the canonical 14B notebook and attach only the newest dataset version.
 
-Use `kaggle datasets version`, not `kaggle datasets create`, because this
-dataset slug already exists. Do not append a trailing `.` to either command.
+## Actual completed runtime
 
-After the version finishes processing on Kaggle, import
-`kaggle/vifinqa-clean-canonical-v1-nf4-v2.ipynb` and attach the latest version
-of `lequangkhai5122005/vifinqa-clean-canonical-v1`.
+- Python 3.12.13;
+- torch 2.10.0+cu128;
+- transformers 5.0.0;
+- accelerate 1.13.0;
+- bitsandbytes 0.50.1;
+- CUDA 12.8;
+- two Tesla T4 GPUs;
+- model revision aedcc2d42b622764e023cf882b6652e646b95671.
 
-## Kaggle settings and Run all
+The old notebook text said transformers<5 but only enforced a minimum, so
+transformers 5.0.0 was the actual successful runtime. The canonical notebook
+checks the full version specification and serializes run_config_nf4.json.
 
-1. Enable a GPU accelerator. The HF/SDPA path is intended for Kaggle T4.
-2. Enable Internet so the base Qwen checkpoint can be downloaded. If Internet
-   must remain disabled, attach a local model dataset and set `VIFINQA_MODEL`
-   to that model directory in the first code cell.
-3. Run all cells. The dependency cell installs only missing or too-old NF4
-   packages; it does not install `gptqmodel` or `autoawq`.
-4. The smoke cell loads the real model and processes three questions through
-   the exact Selection-v2 path. The full cell then runs all 1,012 questions.
-5. If the full audit reports an incomplete checkpoint, rerun only the full-run
-   cell and the cells below it. Exact-signature resume is enabled.
-6. Download `submission_clean_nf4/submission.zip` only after the audit and ZIP
-   validation cells pass.
+## Completed artifact checks
 
-Keep these files together with the submission:
+- 1,012 unique aligned records;
+- 1,012 completed LLM attempts;
+- one run signature;
+- all answers finite;
+- codegen hash matches both audits and submission handoff;
+- folder and ZIP results replay codegen answers exactly;
+- archive layout is safe;
+- submission hash matches the handoff manifest.
 
-- `runtime_preflight_nf4.json`
-- `runtime_full_nf4.json`
-- `codegen_audit_nf4.json`
-- `submission_manifest_nf4.json`
+The audit contains no answer labels, so these checks establish integrity, not
+accuracy.
 
-## Verified locally
+## Required future handoff
 
-- Payload schema: 9
-- Runtime profile: `hf-bitsandbytes-nf4-v1`
-- Retrieval records: 1,012 unique records
-- Valid canonical misses: 220, each with a lexical fallback
-- Payload files: 282, including manifest-hashed NF4 launcher and validator
-- Payload size: approximately 103.1 MB
-- Public ID masks: absent/forbidden
-- Official-derived gold artifacts: absent/forbidden
-- Focused NF4/clean tests: 13 passed
-- Full repository suite: 338 passed
-- Final notebook: nbformat-valid, all six code cells compile
+Keep the following together:
 
-The actual Qwen download, 4-bit CUDA load, throughput, and 1,012-question
-completion remain Kaggle-only checks because the local environment has no
-Torch/CUDA stack. The smoke cell is the remote verification gate.
+- runtime_preflight_nf4.json;
+- runtime_smoke_nf4.json;
+- runtime_full_nf4.json;
+- run_config_nf4.json;
+- codegen_results_nf4.jsonl;
+- codegen_audit_nf4.json;
+- submission_manifest_nf4.json;
+- submission.zip;
+- executed notebook or full log.
+
+The completed 2026-08-21 run predates run_config serialization and did not
+export elapsed time. Its immutable run record explicitly documents those gaps.

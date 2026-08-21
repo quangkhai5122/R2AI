@@ -1,8 +1,10 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "created_at": "2026-08-21",
-  "source_branch": "codex/clean-canonical-baseline-v1",
+  "updated_at": "2026-08-21",
+  "source_branch": "clean-canonical-baseline-v1",
   "source_base_commit": "0ce20aa72e636c33af659709b38d98da89e98c77",
+  "completed_run_source_checkout_post_hoc": "a5a540b0ddeee6041b10abfc872e3d04617a0120",
   "competition_model_limit_billion": 15,
   "public_question_policy": "regression_only_after_candidate_freeze",
   "experiments": [
@@ -32,15 +34,39 @@
       "id": "B0-clean-deterministic",
       "class": "clean_candidate",
       "config": "configs/clean_canonical_baseline_v1/b0_deterministic.json",
+      "artifact": "artifacts/clean_v1/b0_results.jsonl",
       "public_derived": false,
-      "status": "local_smoke_passed"
+      "status": "full_local_completed",
+      "records": 1012,
+      "status_counts": {
+        "ok": 743,
+        "failed": 269
+      }
     },
     {
-      "id": "B1-clean-select-v2-7b",
+      "id": "B1-clean-select-v2-14b-nf4",
       "class": "clean_candidate",
-      "config": "configs/clean_canonical_baseline_v1/b1_select_v2_7b.json",
+      "config": "configs/clean_canonical_baseline_v1/b1_select_v2_14b_nf4.json",
+      "run_record": "experiments/clean_canonical_baseline_v1/runs/b1_14b_nf4_2026-08-21.json",
+      "artifact": "artifacts/clean_v1/b1_nf4",
       "public_derived": false,
-      "status": "local_contract_passed_remote_gpu_pending"
+      "status": "remote_kaggle_completed_local_audit_passed",
+      "model": "Qwen/Qwen2.5-Coder-14B-Instruct",
+      "model_revision_observed": "aedcc2d42b622764e023cf882b6652e646b95671",
+      "runtime_profile": "hf-bitsandbytes-nf4-v1",
+      "records": 1012,
+      "status_counts": {
+        "ok": 763,
+        "failed": 249
+      },
+      "accuracy_evidence": "not_available_no_labels_used"
+    },
+    {
+      "id": "G3-source-derived-ood-gate",
+      "class": "evaluation_plan",
+      "public_derived": false,
+      "status": "planned_next",
+      "purpose": "freeze an independent OOD tune/locked gate before B2 semantics"
     }
   ]
 }

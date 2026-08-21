@@ -20,7 +20,7 @@ from pathlib import Path
 import kaggle_clean_codegen as clean_v1
 import kaggle_codegen as legacy
 
-DEFAULT_MODEL = "Qwen/Qwen2.5-Coder-7B-Instruct"
+DEFAULT_MODEL = "Qwen/Qwen2.5-Coder-14B-Instruct"
 PAYLOAD_SCHEMA_VERSION = 9
 RUNTIME_PROFILE = "hf-bitsandbytes-nf4-v1"
 RUNTIME_PACKAGES = (

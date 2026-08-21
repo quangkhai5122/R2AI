@@ -112,7 +112,7 @@ def _has_option(argv: list[str], name: str) -> bool:
 def _inspect_clean_args(argv: list[str]):
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--payload", required=True)
-    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-7B-Instruct-AWQ")
+    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-14B-Instruct")
     parser.add_argument("--llm-mode", default="select_v2")
     parser.add_argument("--llm-ids-file", default="")
     parser.add_argument("--skip-payload-verification", action="store_true")
@@ -124,6 +124,11 @@ def _inspect_clean_args(argv: list[str]):
     if args.skip_payload_verification:
         raise SystemExit("clean runner forbids --skip-payload-verification")
     import re
+    lowered = args.model.lower()
+    if "awq" in lowered or "gptq" in lowered:
+        raise SystemExit(
+            "clean runner forbids AWQ/GPTQ checkpoints; use runtime NF4"
+        )
     match = re.search(r"(?<![0-9.])(\d+(?:\.\d+)?)\s*[bB](?![A-Za-z])", args.model)
     if match and float(match.group(1)) > 15.0:
         raise SystemExit("model exceeds the organizer-confirmed 15B limit")
@@ -134,11 +139,13 @@ def main() -> None:
     argv = list(sys.argv[1:])
     args = _inspect_clean_args(argv)
     if not _has_option(argv, "--model"):
-        argv.extend(["--model", "Qwen/Qwen2.5-Coder-7B-Instruct-AWQ"])
+        argv.extend(["--model", "Qwen/Qwen2.5-Coder-14B-Instruct"])
     if not _has_option(argv, "--llm-mode"):
         argv.extend(["--llm-mode", "select_v2"])
     if not _has_option(argv, "--k"):
         argv.extend(["--k", "0"])
+    if not _has_option(argv, "--load-4bit"):
+        argv.append("--load-4bit")
     payload = Path(args.payload)
     runtime_code = Path(__file__).resolve().parent
     manifest, manifest_hash = verify_clean_payload(payload, runtime_code)

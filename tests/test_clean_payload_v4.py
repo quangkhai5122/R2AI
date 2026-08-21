@@ -21,8 +21,8 @@ def test_built_payload_uses_side_by_side_nf4_launcher():
     assert _sha256(canonical) == manifest["files"]["code/kaggle_clean_codegen.py"]
     assert _sha256(nf4) == manifest["files"]["code/kaggle_clean_codegen_nf4.py"]
     assert _sha256(validator) == manifest["files"]["code/validate_clean_codegen.py"]
-    assert _sha256(canonical) == _sha256(root / "kaggle" / "kaggle_clean_codegen.py")
-    assert _sha256(nf4) == _sha256(root / "kaggle" / "kaggle_clean_codegen_nf4.py")
+    # This payload is the immutable input of the completed run. Canonical source
+    # may advance for the next payload, so internal manifest hashes control here.
 
 
 def test_packaged_nf4_launcher_imports_canonical_verifier():

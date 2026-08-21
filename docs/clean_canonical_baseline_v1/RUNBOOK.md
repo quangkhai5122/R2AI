@@ -1,46 +1,98 @@
-# Runbook
+# Clean canonical baseline v1 runbook
 
-## 1. Freeze và test local
+## 1. Audit the completed B1 run
 
-```powershell
-D:\miniconda3\python.exe -m pytest -p no:cacheprovider --basetemp artifacts/pytest_clean_v1 tests/test_canonical_metrics.py tests/test_clean_profile.py tests/test_clean_retrieval.py tests/test_clean_payload_builder.py -q
-D:\miniconda3\python.exe -m compileall -q vifinqa scripts kaggle
-```
+From the repository root:
 
-## 2. Tạo clean retrieval
+    python scripts/63_audit_b1_nf4_run.py --out artifacts/clean_v1/b1_nf4/analysis_recomputed.json
 
-```powershell
-D:\miniconda3\python.exe scripts/57_clean_retrieve.py
-```
+Required result: every integrity_checks value is true. This audit uses no answer
+labels and must not be described as an accuracy evaluation.
 
-Mỗi route phải có `clean_profile=clean`, `metric_keys`, `metric_qualifiers` và cùng một `retrieval_config_sha256`.
+The frozen artifact directory is artifacts/clean_v1/b1_nf4. Do not overwrite it
+when developing B2 or rebuilding a payload.
 
-## 3. Chạy B0
+## 2. Re-run local clean gates
 
-```powershell
-D:\miniconda3\python.exe scripts/60_run_clean_b0.py
-D:\miniconda3\python.exe scripts/61_build_clean_submission.py --codegen artifacts/clean_v1/b0_results.jsonl --out-dir artifacts/clean_v1/submission_b0
-```
+    python -m pytest -p no:cacheprovider --basetemp artifacts/pytest_clean_v1 tests/test_canonical_metrics.py tests/test_clean_profile.py tests/test_clean_retrieval.py tests/test_clean_payload_builder.py tests/test_clean_nf4_runner.py tests/test_clean_b1_14b_nf4_notebook.py -q
+    python -m compileall -q vifinqa scripts kaggle
 
-B0 là artifact so sánh bắt buộc, không phải candidate tối ưu theo public.
+Use an artifact-local basetemp because the repository-root pytest cache may have
+host ACL problems.
 
-## 4. Build payload schema 9
+## 3. Rebuild clean retrieval and B0 only when source changes
 
-```powershell
-D:\miniconda3\python.exe scripts/59_make_clean_payload.py --dry-run
-D:\miniconda3\python.exe scripts/59_make_clean_payload.py --dataset-id <kaggle-user>/vifinqa-clean-canonical-v1
-```
+    python scripts/57_clean_retrieve_v2.py
+    python scripts/60_run_clean_b0_v2.py
+    python scripts/61_build_clean_submission.py --codegen artifacts/clean_v1/b0_results.jsonl --out-dir artifacts/clean_v1/submission_b0
 
-Builder không có tham số `--target-dir`. Manifest phải ghi `public_id_masks=false` và `official_derived_gold=false`.
+Every route must keep clean_profile=clean, a retrieval_config_sha256, and a
+metric_variants lexical fallback when metric_keys is empty.
 
-## 5. Chạy B1 trên Kaggle
+## 4. Build the next schema-9 payload
 
-Mở `kaggle/vifinqa-clean-canonical-v1.ipynb`, attach đúng Dataset schema 9 và chạy toàn bộ. Notebook tạo `codegen_results.jsonl` và `submission/submission.zip` trong `/kaggle/working`.
+    python scripts/59_make_clean_payload_v5.py --dry-run
+    python scripts/59_make_clean_payload_v5.py --dataset-id lequangkhai5122005/vifinqa-clean-canonical-v1
 
-## 6. Gate trước private
+The builder has no target-dir flag. Verify these manifest fields before upload:
 
-1. Hash source/config/payload/model revision/submission ZIP.
-2. Chạy OOD source-derived set đã khóa; không chọn theo official/public set.
-3. Chỉ sau khi candidate freeze mới chạy P2.4 regression để phát hiện crash/regression lớn.
-4. Không sửa per-ID sau khi xem regression/public score.
-5. Không upload hoặc chạy GPU từ automation nếu chưa có phê duyệt vận hành.
+- schema_version=9;
+- runtime_profile=hf-bitsandbytes-nf4-v1;
+- validation_profile=clean-codegen-select-v2-v2;
+- default_model=Qwen/Qwen2.5-Coder-14B-Instruct;
+- public_id_masks=false;
+- official_derived_gold=false.
+
+Upload a new version of the existing dataset:
+
+    kaggle datasets version -p artifacts/clean_v1/kaggle_payload -m "schema9: Qwen 14B runtime NF4 canonical" --dir-mode zip
+
+Do not use datasets create for the existing slug and do not append a trailing
+dot to the command.
+
+## 5. Run B1 on Kaggle
+
+Import kaggle/vifinqa-clean-canonical-b1-14b-nf4.ipynb and attach exactly one
+current schema-9 dataset. Enable a GPU and Internet unless the model is attached
+as a Kaggle input.
+
+Run all cells. The active path is base Qwen 14B plus runtime bitsandbytes NF4.
+Do not install gptqmodel or autoawq and do not use an AWQ/GPTQ model ID.
+
+Required handoff files:
+
+- runtime_preflight_nf4.json;
+- runtime_smoke_nf4.json;
+- runtime_full_nf4.json;
+- run_config_nf4.json;
+- codegen_results_nf4.jsonl;
+- codegen_audit_nf4.json;
+- submission_manifest_nf4.json;
+- submission_clean_nf4/submission.zip;
+- the executed notebook or complete text log when available.
+
+Only download/use submission.zip after the complete-LLM validator and archive
+replay pass.
+
+## 6. Resume rules
+
+The full cell may resume only against the same output path and exact
+run_signature. The signature binds model, payload, mode, sampling, seed, input
+limit, quantization, batch grouping, checkpoint grouping, and limit.
+
+Smoke and full intentionally have different signatures. Never copy smoke rows
+into a full checkpoint.
+
+## 7. Gate before any next private candidate
+
+1. Freeze and hash a source-derived OOD tune/locked split.
+2. Select thresholds and candidate semantics using tune only.
+3. Evaluate the frozen candidate once on locked OOD.
+4. Use the 1,012 official records only for crash/invariant regression after the
+   candidate is frozen.
+5. Do not add per-ID fixes, masks, or public-derived overlays.
+6. Pre-register source/config/model/payload/OOD/submission hashes before using a
+   private slot.
+
+The next planned work is G3 OOD evaluation, then one guarded B2
+evidence/shortlist-rescue ablation.

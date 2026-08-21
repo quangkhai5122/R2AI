@@ -1,44 +1,88 @@
-# Clean canonical baseline v1 (G0–G2)
+# Clean canonical baseline v1
 
-## Kết quả triển khai
+> Branch-specific source of truth as of 2026-08-21. If older root-level or
+> incident documentation conflicts with this page, use this page and
+> RUNBOOK.md in this directory.
 
-Phiên bản này tạo một đường chạy clean mới trên nền `main@0ce20aa`, không merge nguyên nhánh `improve_baseline_kien` và không thay đổi runner schema-8 lịch sử. Clean path dùng payload schema 9, canonical registry 139 metric, component-aware retrieval, Selection v2 typed IR và fingerprint xuyên suốt source/store/retrieval/operator/environment.
+## Current state
 
-BTC đã xác nhận mô hình dưới hoặc trên 14B đều hợp lệ nếu không vượt 15B. Vì vậy Qwen 14B không còn bị loại vì eligibility. B1 vẫn chọn Qwen2.5-Coder-7B để tạo mốc chi phí/thời gian dễ lặp; 14B là một trục model-scale hợp lệ cho candidate sau, không phải lý do sửa B1.
+G0-G2 are implemented. The first full clean B1 run has completed on Kaggle with
+Qwen/Qwen2.5-Coder-14B-Instruct and runtime NF4. It is not a 7B or AWQ run.
 
-## Quyết định đối với đề xuất G0–G2
+- B0 deterministic: 1,012 records; 743 ok and 269 failed.
+- B1 14B NF4: 1,012 records; 763 ok and 249 failed.
+- B1 LLM attempts: 1,012 completed.
+- B1 final LLM contribution: 53 records.
+- B1 codegen SHA-256:
+  a8c2b93279daa7099ce0fdcead123cf9df134687fefeb48b484dd66267f9371c
+- B1 submission SHA-256:
+  c98f1859e41a924458abfc7f5b2f2673e028136e7a73b2cb04c6cb84467cb75c
 
-| Đề xuất | Quyết định | Lý do |
-|---|---|---|
-| Gộp G0–G2 trong một epic | Giữ, nhưng gate tuần tự | Cho phép audit provenance trước khi thay đổi semantics. |
-| Dùng `.2866` làm seed | Bác bỏ | Artifact absent và policy có exact-ID overlay; chỉ giữ historical evidence. |
-| Merge nguyên nhánh cải tiến | Bác bỏ | Sẽ kéo theo code cũ và public-derived controls. |
-| Port canonical metrics v2 | Giữ | 139 metric, qualifiers, codes, component graph là abstraction tổng quát. |
-| Port `formula_solver.py` | Bác bỏ | Tạo solver thứ hai khoảng 1.600 dòng, trùng Selection v2/compiler hiện tại. |
-| Canonical/component retrieval | Giữ có cấu hình | Extra weight 0.35; row rerank mặc định tắt để có ablation sạch. |
-| BGE learned rerank ở G2 | Hoãn | Thêm dependency/model và làm khó quy nguyên nhân. |
-| Sửa runner schema-8 tại chỗ | Điều chỉnh | Giữ frozen historical runner; thêm clean schema-9 launcher fail-closed. |
-| Qwen 7B do lo ngại rule 14B | Sửa lý do | 7B chỉ là cost/reference baseline; 14B hợp lệ theo BTC. |
+All integrity/replay checks pass. No answer labels were used in the run audit, so
+these coverage counts do not establish accuracy or generalization.
 
-## Contract chống public bias
+## Canonical entrypoints
 
-Clean payload không có `targets/`, ID allowlist, `--llm-ids-file`, official-derived gold, raw-code mode hoặc khả năng bỏ verify manifest. Clean runner chỉ nhận `select_v2`, kiểm tra model name nếu quảng bá kích thước trên 15B, và hash toàn bộ runtime input.
+- Run analysis: B1_14B_NF4_RUN_ANALYSIS.md
+- Operations: RUNBOOK.md
+- Current run config:
+  ../../configs/clean_canonical_baseline_v1/b1_select_v2_14b_nf4.json
+- Immutable run record:
+  ../../experiments/clean_canonical_baseline_v1/runs/b1_14b_nf4_2026-08-21.json
+- Kaggle notebook:
+  ../../kaggle/vifinqa-clean-canonical-b1-14b-nf4.ipynb
+- NF4 launcher: ../../kaggle/kaggle_clean_codegen_nf4.py
+- Payload builder: ../../scripts/59_make_clean_payload_v5.py
+- Output audit: ../../scripts/63_audit_b1_nf4_run.py
 
-P2.4/official 1.012 câu chỉ được chạy như regression sau khi candidate và threshold đã freeze. Kết quả regression không được dùng để thêm per-ID fix hoặc đổi threshold trước private.
+## Runtime contract
 
-## Hai baseline khóa trước private
+The canonical runtime loads the base Qwen 14B checkpoint through Hugging Face
+and quantizes it at load time with bitsandbytes NF4. AWQ/GPTQ checkpoints,
+gptqmodel, and autoawq are outside this path.
 
-- B0: cùng clean retrieval/store nhưng `NoLLM`, deterministic rules, `k=0` dùng evidence budget.
-- B1: cùng retrieval/store, Qwen2.5-Coder-7B-Instruct-AWQ, Selection v2, `n=2`, temperature `0.2`, mọi câu đều đi qua planner và arbitration chung.
+The completed run observed:
 
-B0/B1 khác nhau ở answer path; không khác ID set, target mask hoặc dữ liệu gold. Qwen 14B có thể trở thành candidate B2 sau khi qua OOD gate độc lập.
+- model revision aedcc2d42b622764e023cf882b6652e646b95671;
+- two Tesla T4 GPUs;
+- Python 3.12.13 and CUDA 12.8;
+- torch 2.10.0+cu128, transformers 5.0.0, accelerate 1.13.0, and
+  bitsandbytes 0.50.1;
+- payload schema 9 and validation profile clean-codegen-select-v2-v2.
 
-## Trạng thái xác minh
+The uploaded payload still declared 7B as its default, but the effective model
+was explicitly overridden to 14B and is bound into the run signature. The run
+record preserves both values. Future builds default to 14B.
 
-- canonical registry: 139 metric, 14 test gốc pass;
-- clean contract/retrieval/payload: 22 test pass;
-- smoke thật: 3/3 record hoàn tất clean retrieval và B0 rule path;
-- Kaggle GPU B1: chưa chạy trong phiên này;
-- upload Dataset/submission: chưa thực hiện.
+## Anti-public-bias contract
 
-Các output smoke nằm trong `artifacts/clean_v1/` và bị Git ignore; source/config/test/docs mới là artifact được version-control.
+The clean payload forbids target masks, ID allowlists, official-derived gold,
+raw-code mode, and skipping manifest verification. Aggregate traces from the
+1,012 official records may identify general failure classes, but they must not
+select thresholds, per-ID patches, or submission variants.
+
+The next change is G3: a source-derived OOD benchmark split by
+ticker/report/year and frozen before candidate inspection. Only after that gate
+should B2 test guarded shortlist/evidence rescue.
+
+## Candidate interpretation
+
+B1 increases execution coverage by 20 records but changes 33 already-ok B0
+answers. Without labels, neither set of changes can be called correct. Preserve
+B0 and B1 as independent anchors.
+
+The main trace bottleneck is evidence/shortlist coverage:
+
+- 546/1,012 records have no Selection-v2 candidates;
+- 684/1,012 have incomplete semantic fact slots;
+- grounding_error is 255/423 evaluated rejections;
+- only 53/1,012 final answers use the LLM.
+
+Do not spend another private slot on a near-duplicate 7B/14B scale comparison
+unless a locked OOD experiment justifies it.
+
+## Historical material
+
+Older AWQ failure notes, validator hotfixes, superseded notebooks, and payload
+builder revisions are retained only under history locations. They are evidence
+about incidents, not runnable instructions.

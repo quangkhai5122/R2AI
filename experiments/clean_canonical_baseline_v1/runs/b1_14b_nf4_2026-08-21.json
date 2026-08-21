@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "run_id": "B1-clean-select-v2-14b-nf4-2026-08-21",
+  "status": "remote_kaggle_completed_local_audit_passed",
+  "artifact_dir": "artifacts/clean_v1/b1_nf4",
+  "effective_config": "configs/clean_canonical_baseline_v1/b1_select_v2_14b_nf4.json",
+  "source_checkout": {
+    "commit": "a5a540b0ddeee6041b10abfc872e3d04617a0120",
+    "evidence": "post_hoc_payload_source_hash_alignment",
+    "embedded_in_remote_run": false,
+    "pre_edit_tests": "9 passed in 3.14s"
+  },
+  "payload": {
+    "schema_version": 9,
+    "runtime_profile": "hf-bitsandbytes-nf4-v1",
+    "validation_profile": "clean-codegen-select-v2-v2",
+    "declared_default_model_in_uploaded_payload": "Qwen/Qwen2.5-Coder-7B-Instruct",
+    "effective_model_override": "Qwen/Qwen2.5-Coder-14B-Instruct",
+    "stable_verified_manifest_sha256": "146898f6eb689c24ec4c59d310aaac522320df457ad8a7f24a606dd4dba666a8",
+    "payload_manifest_file_sha256": "9327f358c494921cb841035c254d87b51409570a0dd6be5d8522d95b5b8fa239",
+    "public_id_masks": false,
+    "official_derived_gold": false
+  },
+  "model": {
+    "id": "Qwen/Qwen2.5-Coder-14B-Instruct",
+    "revision_observed": "aedcc2d42b622764e023cf882b6652e646b95671",
+    "backend": "hf",
+    "quantization": {
+      "backend": "bitsandbytes",
+      "bits": 4,
+      "quant_type": "nf4",
+      "compute_dtype": "float16",
+      "double_quant": true
+    }
+  },
+  "generation": {
+    "llm_mode": "select_v2",
+    "llm_target": "all",
+    "k": 0,
+    "n": 2,
+    "temperature": 0.2,
+    "max_tokens": 512,
+    "max_input_tokens": 5000,
+    "batch_size": 4,
+    "checkpoint_every": 32,
+    "time_budget_min": 420,
+    "seed": 13,
+    "provenance_note": "model/runtime are artifact-observed; remaining values are recovered from the imported notebook command and trace fields because this notebook version did not serialize a full run-config file"
+  },
+  "runtime": {
+    "python": "3.12.13",
+    "platform": "Linux-6.12.90+-x86_64-with-glibc2.35",
+    "cuda": "12.8",
+    "gpus": [
+      {
+        "name": "Tesla T4",
+        "count": 2,
+        "memory_bytes_each": 15636037632,
+        "compute_capability": [7, 5]
+      }
+    ],
+    "packages": {
+      "torch": "2.10.0+cu128",
+      "transformers": "5.0.0",
+      "accelerate": "1.13.0",
+      "bitsandbytes": "0.50.1",
+      "tokenizers": "0.22.2",
+      "numpy": "2.0.2",
+      "pandas": "2.3.3",
+      "pyarrow": "24.0.0",
+      "tqdm": "4.67.3"
+    },
+    "preflight_created_at_utc": "2026-08-21T06:42:42.543816+00:00",
+    "full_runtime_report_created_at_utc": "2026-08-21T06:48:50.537219+00:00",
+    "elapsed_seconds": null,
+    "elapsed_note": "not recoverable: the exported artifacts do not include the executed notebook or end timestamp"
+  },
+  "outputs": {
+    "records": 1012,
+    "llm_completed": 1012,
+    "run_signature": "4b2ea9cca04e03a67f5087a9f919725657a4a1e7d91f696395a0a25bb1c2c569",
+    "codegen_sha256": "a8c2b93279daa7099ce0fdcead123cf9df134687fefeb48b484dd66267f9371c",
+    "submission_sha256": "c98f1859e41a924458abfc7f5b2f2673e028136e7a73b2cb04c6cb84467cb75c",
+    "archive_members": 1522,
+    "status_counts": {
+      "ok": 763,
+      "failed": 249
+    },
+    "source_counts": {
+      "llm_select_v2": 53,
+      "rule": 353,
+      "rule_composite": 357,
+      "none": 249
+    },
+    "selection_outcomes": {
+      "accepted": 263,
+      "rejected": 203,
+      "no_candidates": 546
+    }
+  },
+  "audit": {
+    "script": "scripts/63_audit_b1_nf4_run.py",
+    "generated_output": "artifacts/clean_v1/b1_nf4/analysis_recomputed.json",
+    "labels_used": false,
+    "accuracy_claim_supported": false,
+    "all_integrity_checks_passed": true,
+    "submission_replays_codegen_exactly": true,
+    "local_audit_matches_kaggle_audit": true
+  },
+  "known_provenance_gaps": [
+    "The uploaded payload declared 7B as its default even though the effective runtime model was 14B.",
+    "The completed notebook did not serialize all CLI arguments as a standalone run-config artifact.",
+    "The source Git commit was verified post hoc through payload/source hash tests, not embedded by the remote run.",
+    "No executed notebook or complete log was exported, so elapsed runtime and throughput cannot be verified."
+  ]
+}

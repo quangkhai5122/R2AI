@@ -1,15 +1,26 @@
-# Khung năm lượt private
+# Five private-submission slots
 
-Năm lượt không được dùng như năm bước hill-climb theo public/private score. Trước khi có private feedback, mỗi artifact phải được pre-register bằng source hash, config hash, model revision, payload hash, OOD report và submission ZIP hash.
+The five slots are a portfolio of distinct hypotheses, not five public/private
+hill-climb steps. Before any submission, preregister source, config, model
+revision, payload, OOD report, run signature, and submission hashes.
 
-| Lượt | Candidate | Khác biệt cấp chiến lược | Điều kiện được chiếm slot |
+| Slot | Candidate | Strategic distinction | Entry gate |
 |---|---|---|---|
-| S1 | B0 deterministic | không LLM; ưu tiên precision/replay | full build sạch, zero crash, OOD deterministic report |
-| S2 | B1 Selection v2 7B | typed semantic planner nhỏ | tăng OOD semantic coverage mà không tăng crash/unit errors quá gate |
-| S3 | Selection v2 14B | model-scale/diversity, cùng compiler | disagreement có ích với S2 trên OOD locked set; model ≤15B |
-| S4 | row-aware retrieval | thay đổi evidence acquisition, giữ answer compiler | cải thiện retrieval recall trên source-derived OOD và không làm precision sụt quá gate |
-| S5 | architecture-diverse candidate | ví dụ deterministic formula-family planner hoặc model family khác ≤15B | error correlation thấp với S2/S3; không phải overlay vài ID |
+| S1 | B0 deterministic clean control | no LLM; reproducible precision anchor | full build, zero crashes, locked OOD report |
+| S2 | B1 Qwen 14B runtime-NF4 Selection v2 | typed semantic planner plus conservative arbitration | completed artifact and locked OOD comparison |
+| S3 | B2 guarded evidence/shortlist rescue | changes evidence acquisition while fixing model/compiler | OOD recall/accuracy gain without grounding/unit/year guardrail breach |
+| S4 | B3 typed structural specialist | distinct answer architecture for ranking/count/year/average | OOD gain and low error overlap with B2 |
+| S5 | diversity candidate | another <=15B model family or preregistered conservative ensemble | lower OOD error correlation with S2-S4 |
 
-Nếu một candidate không qua gate, không tự động thay bằng một chỉnh sửa nhỏ trên candidate tốt nhất. Slot đó nên được giữ cho một giả thuyết độc lập hoặc bỏ trống. Private score, nếu được trả về từng lượt, chỉ dùng để quan sát; không dùng để sửa threshold/ID list cho lượt kế tiếp trừ khi rule chính thức mô tả private như một development phase.
+The completed B1 run is the 14B candidate. The previously documented clean 7B
+candidate was never run remotely and should not occupy a private slot merely to
+preserve an outdated plan. A 7B experiment may still be useful offline for cost
+or stability.
 
-B0/B1 trong phiên bản này mới là hai artifact đã định nghĩa đầy đủ. S3–S5 là portfolio hypotheses, chưa phải implementation đã xác minh.
+If a candidate fails its OOD gate, do not replace it with a tiny edit to the
+current best public result. Keep the slot for another preregistered hypothesis
+or leave it unused.
+
+Private feedback is observational unless the official rules explicitly define
+the private phase as a development set. It must not trigger ID lists, threshold
+retuning, or per-question patches for later slots.

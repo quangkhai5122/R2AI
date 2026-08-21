@@ -54,7 +54,7 @@ def main() -> None:
         manifest["runtime_profile"] = "hf-bitsandbytes-nf4-v1"
         manifest["runtime_launcher"] = "code/kaggle_clean_codegen_nf4.py"
         manifest["validation_profile"] = "clean-codegen-select-v2-v2"
-        manifest["default_model"] = "Qwen/Qwen2.5-Coder-7B-Instruct"
+        manifest["default_model"] = "Qwen/Qwen2.5-Coder-14B-Instruct"
         manifest["quantization"] = {
             "backend": "bitsandbytes",
             "bits": 4,
