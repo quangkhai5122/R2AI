@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-21",
+  "source_branch": "codex/clean-canonical-baseline-v1",
+  "source_base_commit": "0ce20aa72e636c33af659709b38d98da89e98c77",
+  "competition_model_limit_billion": 15,
+  "public_question_policy": "regression_only_after_candidate_freeze",
+  "experiments": [
+    {
+      "id": "main-reported-0.2490",
+      "class": "historical",
+      "evidence": "repo_reported",
+      "public_derived": true,
+      "eligible_as_clean_seed": false
+    },
+    {
+      "id": "canonical-reported-0.2806",
+      "class": "historical",
+      "evidence": "repo_reported_artifact_absent",
+      "public_derived": true,
+      "eligible_as_clean_seed": false
+    },
+    {
+      "id": "canonical-audited6-reported-0.2866",
+      "class": "historical",
+      "evidence": "repo_reported_artifact_absent",
+      "public_derived": true,
+      "eligible_as_clean_seed": false,
+      "quarantine_reason": "exact-ID audited overlay"
+    },
+    {
+      "id": "B0-clean-deterministic",
+      "class": "clean_candidate",
+      "config": "configs/clean_canonical_baseline_v1/b0_deterministic.json",
+      "public_derived": false,
+      "status": "local_smoke_passed"
+    },
+    {
+      "id": "B1-clean-select-v2-7b",
+      "class": "clean_candidate",
+      "config": "configs/clean_canonical_baseline_v1/b1_select_v2_7b.json",
+      "public_derived": false,
+      "status": "local_contract_passed_remote_gpu_pending"
+    }
+  ]
+}

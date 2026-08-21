@@ -1,0 +1,11 @@
+{
+  "profile": "clean",
+  "canonical_registry": true,
+  "component_expansion": true,
+  "canonical_extra_weight": 0.35,
+  "label_boost": 1.5,
+  "label_threshold": 88.0,
+  "row_rerank": false,
+  "row_score_weight": 0.18,
+  "max_extra_variants": 32
+}

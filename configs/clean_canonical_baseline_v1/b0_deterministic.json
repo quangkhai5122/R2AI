@@ -1,0 +1,9 @@
+{
+  "name": "B0-clean-deterministic",
+  "profile": "clean",
+  "answer_path": "rule_only",
+  "retrieval_config": "configs/clean_canonical_baseline_v1/retrieval.json",
+  "public_id_masks": false,
+  "official_derived_gold": false,
+  "seed": 13
+}
