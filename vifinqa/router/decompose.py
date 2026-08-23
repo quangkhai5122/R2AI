@@ -69,6 +69,9 @@ class Plan:
     facts: list[Fact] = field(default_factory=list)
     n_entities: int = 1
     n_periods: int = 1
+    dimension: str = ""        # entity | year
+    projection: str = ""       # value | year
+    direction: str = ""        # max | min
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -78,6 +81,8 @@ class Plan:
     def to_dict(self) -> dict:
         return {"op": self.op, "facts": [f.to_dict() for f in self.facts],
                 "n_entities": self.n_entities, "n_periods": self.n_periods,
+                "dimension": self.dimension, "projection": self.projection,
+                "direction": self.direction,
                 "notes": self.notes}
 
 
@@ -109,8 +114,18 @@ def detect_op(question: str) -> str:
     return "lookup"
 
 
+def _ranking_direction(question: str) -> str:
+    text = norm(question)
+    if any(value in text for value in (
+        "nho nhat", "thap nhat", "it nhat", "be nhat", "toi thieu",
+    )):
+        return "min"
+    return "max"
+
+
 def build_plan(question: str, tickers: list[str], years: list[int],
-               doc_type: str, metric: str) -> Plan:
+               doc_type: str, metric: str,
+               output_type: str = "number") -> Plan:
     """Cross entities x periods into concrete fact requirements."""
     op = detect_op(question)
     tickers = list(dict.fromkeys(tickers)) or [""]
@@ -134,10 +149,18 @@ def build_plan(question: str, tickers: list[str], years: list[int],
                 facts.append(Fact(ticker=t, year=y, doc_type=doc_type, metric=metric))
 
     plan = Plan(op=op, facts=facts, n_entities=len(tickers), n_periods=len(years))
+    if op == "ranking":
+        plan.direction = _ranking_direction(question)
+        if output_type == "year" and len(tickers) == 1 and len(years) >= 2:
+            plan.dimension = "year"
+            plan.projection = "year"
+        elif len(tickers) >= 2:
+            plan.dimension = "entity"
+            plan.projection = "value"
     if op in ("ratio", "margin") and not (num and den):
         plan.op = "lookup"          # cannot split -> treat as a plain lookup
         plan.notes.append("ratio without a splittable 'A trên B' -> lookup")
-    if op == "ranking" and len(tickers) < 2:
+    if op == "ranking" and not plan.dimension:
         plan.notes.append("ranking with <2 entities - entity list may be implicit")
     return plan
 

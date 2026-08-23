@@ -7,6 +7,7 @@ from vifinqa.finance.metrics import (
     get_metric,
     metric_schema_score,
     metric_uses_absolute_value,
+    metric_evidence_components,
     metric_keys,
 )
 
@@ -98,6 +99,76 @@ def test_bank_parent_and_child_metrics_are_distinct():
         ["vay cac TCTD khac"], "Tien gui va vay cac TCTD khac") < -20
     assert metric_schema_score(
         ["vay cac TCTD khac"], "Vay cac TCTD khac") > 10
+
+
+def test_intangible_fixed_assets_do_not_collapse_to_fixed_assets_parent():
+    phrase = "gia tri con lai cua tai san co dinh vo hinh"
+
+    assert metric_keys([phrase], False) == ["intangible_fixed_assets"]
+    assert metric_schema_score(
+        [phrase], "Tai san co dinh vo hinh", phrase) > 0
+    assert metric_schema_score(
+        [phrase], "X Tai san co dinh", phrase) < 0
+
+
+def test_note_dictionary_v3_recognizes_exact_year_ranking_metrics():
+    cases = {
+        "so du cac khoan phai thu ben ngoai": "external_receivables",
+        "gia tri hang hoa ton kho cuoi ky": "merchandise_inventory",
+        "tong doanh thu chua thuc hien ngan han": "unearned_revenue_short_term",
+        "tong chi phi hoa hong moi gioi bat dong san":
+            "real_estate_brokerage_expense",
+        "chi phi xay dung phai tra ngan han":
+            "construction_payables_short_term",
+        "doanh thu thuan tu san pham khi LPG": "lpg_revenue",
+        "tong doanh thu cung cap dich vu cho cac ben lien quan":
+            "related_party_service_revenue",
+        "phai tra cho Cong ty Lien doanh TNHH Crown Sai Gon":
+            "crown_saigon_trade_payable",
+    }
+
+    for phrase, expected in cases.items():
+        assert metric_keys([phrase], False) == [expected]
+
+
+def test_compositional_v3_note_qualifiers_are_distinct_metrics():
+    keys = metric_keys([
+        "vay ngắn hạn phải trả các bên liên quan",
+        "vay ngắn hạn ngân hàng",
+        "phải thu ngắn hạn khác từ các bên liên quan",
+    ], expand_derived=False)
+
+    assert "related_party_short_term_borrowings" in keys
+    assert "bank_short_term_borrowings" in keys
+    assert "related_party_other_receivables_short_term" in keys
+
+
+def test_compositional_v3_derived_metrics_expand_operands():
+    keys = metric_keys([
+        "365 lần hàng tồn kho bình quân trên giá vốn hàng bán",
+        "tỷ lệ giữa chi phí lãi vay và lợi nhuận trước thuế",
+    ])
+
+    assert "inventory" in keys
+    assert "cost_of_goods_sold" in keys
+    assert "interest_expense" in keys
+    assert "pretax_profit" in keys
+
+
+def test_inventory_days_declares_opening_and_closing_inventory_periods():
+    assert metric_evidence_components("inventory_days") == (
+        ("inventory", -1),
+        ("inventory", 0),
+        ("cost_of_goods_sold", 0),
+    )
+
+
+def test_note_row_aliases_do_not_become_generic_question_aliases():
+    assert metric_keys(["hang hoa"], False) == []
+    assert metric_keys(["chi phi xay dung"], False) == []
+    assert "hang hoa" in get_metric("merchandise_inventory").row_variants
+    assert "chi phi xay dung" in get_metric(
+        "construction_payables_short_term").row_variants
 
 
 def test_provision_stock_and_flow_metrics_are_distinct():

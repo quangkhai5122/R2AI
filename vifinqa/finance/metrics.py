@@ -53,11 +53,19 @@ class CanonicalMetric:
     forbidden_phrases: tuple[str, ...] = ()
     qualifier_phrases: tuple[str, ...] = ()
     components: tuple[str, ...] = ()
+    component_year_offsets: tuple[int, ...] = ()
+    row_aliases: tuple[str, ...] = ()
+    context_phrases: tuple[str, ...] = ()
     qualifiers: MetricQualifiers = MetricQualifiers()
 
     @property
     def variants(self) -> tuple[str, ...]:
         return _dedupe((self.label, *self.aliases))
+
+    @property
+    def row_variants(self) -> tuple[str, ...]:
+        """Canonical query phrases plus terse labels used inside note tables."""
+        return _dedupe((*self.variants, *self.row_aliases))
 
     @property
     def is_derived(self) -> bool:
@@ -84,7 +92,9 @@ def _dedupe(values: Iterable[str]) -> tuple[str, ...]:
 
 def _metric(key: str, label: str, aliases=(), codes=(), statement="other",
             required=(), forbidden=(), qualifiers=(),
-            components=(), *, stock_flow="", gross_net="", maturity="",
+            components=(), *, row_aliases=(), context=(),
+            component_year_offsets=(),
+            stock_flow="", gross_net="", maturity="",
             granularity="", sign="") -> CanonicalMetric:
     if not stock_flow:
         if statement == "balance_sheet":
@@ -101,6 +111,9 @@ def _metric(key: str, label: str, aliases=(), codes=(), statement="other",
         forbidden_phrases=_dedupe(norm(a) for a in forbidden),
         qualifier_phrases=_dedupe(norm(a) for a in qualifiers),
         components=tuple(components),
+        component_year_offsets=tuple(int(value) for value in component_year_offsets),
+        row_aliases=_dedupe(norm(a) for a in row_aliases),
+        context_phrases=_dedupe(norm(a) for a in context),
         qualifiers=MetricQualifiers(
             stock_flow=stock_flow,
             gross_net=gross_net,
@@ -135,21 +148,30 @@ _LINE_ITEMS = [
     _metric("supplier_prepayments_short_term", "tra truoc cho nguoi ban ngan han",
             ("tra truoc nguoi ban ngan han", "tien tra truoc cho nguoi ban ngan han"),
             ("132",), "balance_sheet", ("tra truoc", "nguoi ban", "ngan han"),
-            maturity="short", granularity="detail"),
+            context=("bang can doi ke toan",), maturity="short",
+            granularity="detail"),
     _metric("inventory", "hang ton kho", ("hang ton kho rong", "ton kho"),
             ("140", "141"), "balance_sheet", ("hang ton kho", "ton kho")),
     _metric("long_term_assets", "tai san dai han", ("tong tai san dai han",),
             ("200",), "balance_sheet", ("tai san dai han",),
             maturity="long", granularity="aggregate"),
     _metric("fixed_assets", "tai san co dinh", ("tong tai san co dinh",),
-            ("220",), "balance_sheet", ("tai san co dinh",), ("khau hao",),
+            ("220",), "balance_sheet", ("tai san co dinh",),
+            ("khau hao", "tai san co dinh huu hinh", "tai san co dinh vo hinh",
+             "tscd huu hinh", "tscd vo hinh"),
             ("khau hao",)),
     _metric("tangible_fixed_assets", "tai san co dinh huu hinh",
             ("tcdn huu hinh",), ("221",), "balance_sheet",
             ("tai san co dinh huu hinh",)),
+    _metric("intangible_fixed_assets", "tai san co dinh vo hinh",
+            ("tscd vo hinh", "gia tri con lai cua tai san co dinh vo hinh",
+             "gia tri con lai tai san co dinh vo hinh"),
+            ("227",), "balance_sheet", ("tai san co dinh vo hinh",),
+            gross_net="net"),
     _metric("construction_in_progress", "chi phi xay dung co ban do dang",
             ("xay dung co ban do dang", "chi phi xay dung co ban dang do"),
-            ("242",), "balance_sheet", ("xay dung", "do dang")),
+            ("242",), "balance_sheet", ("xay dung", "do dang"),
+            context=("bang can doi ke toan",)),
     _metric("total_assets", "tong tai san", ("tong cong tai san",),
             ("270",), "balance_sheet", ("tong tai san", "tong cong tai san"),
             granularity="aggregate"),
@@ -174,7 +196,8 @@ _LINE_ITEMS = [
     _metric("equity", "von chu so huu",
             ("tong von chu so huu", "nguon von chu so huu"),
             ("400",), "balance_sheet", ("von chu so huu",),
-            ("von gop cua chu so huu",), granularity="aggregate"),
+            ("von gop cua chu so huu",), context=("bang can doi ke toan",),
+            granularity="aggregate"),
     _metric("contributed_capital", "von gop cua chu so huu",
             ("von dau tu cua chu so huu", "von gop chu so huu"),
             ("411",), "balance_sheet", ("von", "chu so huu")),
@@ -191,7 +214,9 @@ _LINE_ITEMS = [
             ("giam tru", "doanh thu")),
     _metric("net_revenue", "doanh thu thuan",
             ("doanh thu thuan ve ban hang va cung cap dich vu",),
-            ("10",), "income_statement", ("doanh thu thuan",), gross_net="net"),
+            ("10",), "income_statement", ("doanh thu thuan",),
+            context=("bao cao ket qua hoat dong kinh doanh",
+                     "bao cao ket qua kinh doanh"), gross_net="net"),
     _metric("cost_of_goods_sold", "gia von hang ban", ("gia von",),
             ("11",), "income_statement", ("gia von",), sign="absolute"),
     _metric("gross_profit", "loi nhuan gop",
@@ -205,7 +230,8 @@ _LINE_ITEMS = [
             sign="absolute"),
     _metric("interest_expense", "chi phi lai vay", ("lai tien vay", "lai vay"),
             ("23",), "income_statement", ("chi phi lai vay", "lai tien vay"),
-            ("da tra", "thuc tra", "thanh toan"), sign="absolute"),
+            ("da tra", "thuc tra", "thanh toan"),
+            row_aliases=("trong do chi phi lai vay",), sign="absolute"),
     _metric("selling_expense", "chi phi ban hang", (), ("25",),
             "income_statement", ("chi phi ban hang",), sign="absolute"),
     _metric("administrative_expense", "chi phi quan ly doanh nghiep", (), ("26",),
@@ -218,7 +244,9 @@ _LINE_ITEMS = [
     _metric("other_expense", "chi phi khac", (), ("32",),
             "income_statement", ("chi phi khac",), sign="absolute"),
     _metric("other_profit", "loi nhuan khac", (), ("40",),
-            "income_statement", ("loi nhuan khac",)),
+            "income_statement", ("loi nhuan khac",),
+            context=("bao cao ket qua hoat dong kinh doanh",
+                     "bao cao ket qua kinh doanh")),
     _metric("pretax_profit", "loi nhuan truoc thue",
             ("tong loi nhuan ke toan truoc thue", "loi nhuan ke toan truoc thue", "lntt"),
             ("50",), "income_statement",
@@ -389,12 +417,58 @@ _BANK_LINE_ITEMS = [
 
 
 _NOTE_LINE_ITEMS = [
+    _metric("external_receivables", "cac khoan phai thu ben ngoai",
+            ("khoan phai thu ben ngoai", "so du cac khoan phai thu ben ngoai"),
+            statement="balance_sheet", granularity="detail"),
+    _metric("merchandise_inventory", "hang hoa ton kho",
+            ("gia tri hang hoa ton kho", "hang hoa ton kho cuoi ky"),
+            statement="balance_sheet", row_aliases=("hang hoa",),
+            context=("hang ton kho",), granularity="detail"),
+    _metric("unearned_revenue_short_term",
+            "doanh thu chua thuc hien ngan han",
+            ("tong doanh thu chua thuc hien ngan han",), ("318",),
+            statement="balance_sheet", maturity="short",
+            granularity="aggregate"),
+    _metric("real_estate_brokerage_expense",
+            "chi phi moi gioi bat dong san",
+            ("tong chi phi hoa hong moi gioi bat dong san",
+             "chi phi hoa hong moi gioi bat dong san"),
+            statement="balance_sheet", context=("chi phi phai tra ngan han",),
+            maturity="short", granularity="detail", sign="absolute"),
+    _metric("construction_payables_short_term",
+            "chi phi xay dung phai tra ngan han",
+            ("chi phi xay dung phai tra",), statement="balance_sheet",
+            row_aliases=("chi phi xay dung",),
+            context=("chi phi phai tra",), maturity="short",
+            granularity="detail"),
+    _metric("lpg_revenue", "doanh thu thuan tu san pham khi lpg",
+            ("doanh thu thuan san pham khi lpg", "doanh thu lpg"),
+            statement="income_statement", gross_net="net",
+            granularity="detail"),
+    _metric("related_party_service_revenue",
+            "doanh thu cung cap dich vu cho cac ben lien quan",
+            ("tong doanh thu cung cap dich vu cho cac ben lien quan",
+             "doanh thu voi cac ben lien quan",
+             "doanh thu voi cac ben lien quan chu yeu"),
+            statement="income_statement", granularity="detail"),
+    _metric("crown_saigon_trade_payable",
+            "phai tra cho cong ty lien doanh tnhh crown sai gon",
+            ("so du phai tra cong ty lien doanh tnhh crown sai gon",),
+            statement="balance_sheet",
+            row_aliases=("cong ty lien doanh tnhh crown sai gon",),
+            context=("phai tra nguoi ban",), maturity="short",
+            granularity="detail"),
     _metric("supplier_prepayments_long_term", "tra truoc cho nguoi ban dai han",
             ("tra truoc nguoi ban dai han",), statement="balance_sheet",
             maturity="long", granularity="detail"),
     _metric("other_receivables_short_term", "phai thu ngan han khac",
             ("cac khoan phai thu khac ngan han",), statement="balance_sheet",
             maturity="short"),
+    _metric("related_party_other_receivables_short_term",
+            "phai thu ngan han khac tu cac ben lien quan",
+            ("cac khoan phai thu ngan han khac tu cac ben lien quan",
+             "so du cuoi nam cac khoan phai thu ngan han khac tu cac ben lien quan"),
+            statement="balance_sheet", maturity="short", granularity="detail"),
     _metric("prepaid_expenses", "chi phi tra truoc", (),
             statement="balance_sheet", granularity="aggregate"),
     _metric("prepaid_expenses_short_term", "chi phi tra truoc ngan han",
@@ -408,6 +482,16 @@ _NOTE_LINE_ITEMS = [
             statement="balance_sheet"),
     _metric("bonus_welfare_fund", "quy khen thuong phuc loi",
             ("quy khen thuong va phuc loi",), statement="balance_sheet"),
+    _metric("related_party_short_term_borrowings",
+            "vay ngan han phai tra cac ben lien quan",
+            ("vay ngan han cac ben lien quan",
+             "vay ngan han phai tra ben lien quan"),
+            statement="balance_sheet", row_aliases=("vay ngan han cac ben lien quan",),
+            maturity="short", granularity="detail"),
+    _metric("bank_short_term_borrowings", "vay ngan han ngan hang",
+            ("so du vay ngan han ngan hang",), statement="balance_sheet",
+            row_aliases=("vay ngan han ngan hang",), maturity="short",
+            granularity="detail"),
     _metric("investment_property_net", "gia tri con lai cua bat dong san dau tu",
             ("bat dong san dau tu",), statement="balance_sheet",
             gross_net="net"),
@@ -450,7 +534,9 @@ _NOTE_LINE_ITEMS = [
             ("chi phi nhan cong", "quy luong", "chi phi nhan vien"),
             statement="income_statement", sign="absolute"),
     _metric("operating_lease_commitments", "cam ket cho thue hoat dong",
-            ("cam ket thue hoat dong", "tien thue toi thieu trong tuong lai"),
+            ("cam ket thue hoat dong", "tien thue toi thieu trong tuong lai",
+             "tong tien thue toi thieu phai tra theo cac hop dong thue hoat dong khong duoc huy ngang",
+             "cac khoan tien thue toi thieu phai tra cho cac hop dong thue hoat dong khong duoc huy ngang"),
             statement="other", granularity="aggregate"),
     _metric("borrowings_total", "vay va no",
             ("tong no vay", "tong cac khoan vay", "no vay"),
@@ -547,6 +633,21 @@ _DERIVED = [
             components=("net_profit", "total_assets")),
     _metric("roe", "roe", ("loi nhuan sau thue tren von chu so huu",),
             components=("net_profit", "equity")),
+    _metric("cost_inventory_ratio", "gia von hang ban tren hang ton kho",
+            ("ty le giua gia von hang ban tong cong va gia goc hang ton kho cuoi nam",
+             "gia von hang ban chia cho hang ton kho"),
+            components=("cost_of_goods_sold", "inventory")),
+    _metric("interest_pretax_ratio", "chi phi lai vay tren loi nhuan truoc thue",
+            ("ty le giua chi phi lai vay va loi nhuan truoc thue",),
+            components=("interest_expense", "pretax_profit")),
+    _metric("inventory_days", "so ngay hang ton kho",
+            ("365 lan hang ton kho binh quan tren gia von hang ban",
+             "365 lan hang ton kho binh quan dau ky va cuoi ky tren gia von hang ban",
+             "365 lan trung binh hang ton kho dau nam va cuoi nam tren gia von hang ban",
+             "hang ton kho binh quan nhan 365 chia cho gia von hang ban",
+             "hang ton kho binh quan nhan 365 roi chia cho gia von hang ban"),
+            components=("inventory", "inventory", "cost_of_goods_sold"),
+            component_year_offsets=(-1, 0, 0)),
     _metric("working_capital", "von luu dong rong", (),
             components=("current_assets", "current_liabilities")),
     _metric("inventory_assets", "ty trong hang ton kho",
@@ -682,6 +783,19 @@ def metric_schema_score(phrases: Iterable[str], label: str,
         have = getattr(label_q, field)
         if want and have:
             score += reward if want == have else penalty
+
+    # Defaults identify the economic line, but an explicit qualifier is stronger
+    # evidence inside note tables. Prefer "gia tri con lai" over an otherwise
+    # valid generic parent when the question explicitly asks for the net figure.
+    asked_explicit = extract_metric_qualifiers(
+        " ".join((*phrase_list, norm(question))), include_defaults=False)
+    label_explicit = extract_metric_qualifiers(label, include_defaults=False)
+    if asked_explicit.gross_net:
+        if label_explicit.gross_net:
+            score += (8.0 if asked_explicit.gross_net == label_explicit.gross_net
+                      else -24.0)
+        else:
+            score -= 18.0
     return score
 
 
@@ -729,13 +843,31 @@ def metric_keys(texts: Iterable[str], expand_derived: bool = True) -> list[str]:
     return list(_metric_keys_cached(normalized, expand_derived))
 
 
+def metric_evidence_components(key: str) -> tuple[tuple[str, int], ...]:
+    """Return atomic metric operands with their relative fiscal-year offsets."""
+    metric = get_metric(key)
+    if not metric.is_derived:
+        return ((key, 0),)
+    offsets = metric.component_year_offsets or (0,) * len(metric.components)
+    if len(offsets) != len(metric.components):
+        raise ValueError(f"invalid component year offsets for metric {key}")
+    out: list[tuple[str, int]] = []
+    for component, offset in zip(metric.components, offsets):
+        for atomic_key, nested_offset in metric_evidence_components(component):
+            item = (atomic_key, int(offset) + nested_offset)
+            if item not in out:
+                out.append(item)
+    return tuple(out)
+
+
 @lru_cache(maxsize=32768)
 def _metric_keys_cached(texts: tuple[str, ...],
                         expand_derived: bool) -> tuple[str, ...]:
     seen, out = set(), []
     for text in texts:
         for match in find_metrics(text):
-            keys = (match.metric.components if match.metric.is_derived and expand_derived
+            keys = (match.metric.components
+                    if match.metric.is_derived and expand_derived
                     else (match.metric.key,))
             for key in keys:
                 if key not in seen:
@@ -767,8 +899,18 @@ def _expand_metric_variants_cached(originals: tuple[str, ...], question: str,
         # For example, "no ngan han voi ben lien quan" is not code 310.
         if any(phrase in asked_text for phrase in metric.qualifier_phrases):
             continue
-        expanded.extend(metric.variants[:max(1, aliases_per_metric)])
+        expanded.extend(metric.row_variants[:max(1, aliases_per_metric)])
     return _dedupe(expanded)
+
+
+def metric_context_matches(metric_key: str, context: str) -> bool:
+    """Require note-table context only for metrics whose row label is ambiguous."""
+    try:
+        phrases = METRICS[metric_key].context_phrases
+    except KeyError:
+        return False
+    context_norm = norm(context)
+    return not phrases or any(phrase in context_norm for phrase in phrases)
 
 
 def code_expectation(phrases: Iterable[str], label: str = "") -> tuple[set[str], bool]:

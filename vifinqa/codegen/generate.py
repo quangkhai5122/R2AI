@@ -15,18 +15,30 @@ from pathlib import Path
 
 from ..config import CODEGEN_K
 from ..extraction.build_store import Store
+from ..router.evidence import evidence_coverage
 from ..retrieval.serialize import tidy_csv_text, df_roundtrip
 from ..utils.io import read_jsonl, write_jsonl
 from .executor import run_code, extract_code
 from .to_expression import try_to_expression
 from .formulas import describe_for_prompt
-from ..retrieval.shortlist import build_shortlist, render_shortlist
+from ..retrieval.shortlist import (
+    build_shortlist,
+    candidate_matches_requirement,
+    requirement_linking_variants,
+    render_shortlist,
+)
 from .prompts import SYSTEM, build_user, SELECT_SYSTEM, build_select_user
 from .rule_codegen import try_rule_answer
 from .rule_composite import try_composite_answer
-from .formula_solver import try_formula_answer
+from .formula_solver import requires_formula_solver, try_formula_answer
 from .arbitrate import arbitrate
-from .selection import parse_selection, synthesize, confidence as sel_conf
+from .selection import (
+    parse_selection,
+    requirement_coverage,
+    selection_matches_route,
+    synthesize,
+    confidence as sel_conf,
+)
 from .semantic import (
     all_dataframe_refs,
     answer_dataframe_refs,
@@ -42,6 +54,10 @@ class QuestionBundle:
         self.route = rec["route"]
         self.run_signature = run_signature
         self.cands = rec["candidates"][:k]
+        self.evidence = evidence_coverage(
+            self.route.get("evidence_requirements", []), self.cands
+        )
+        self.route["evidence"] = self.evidence
         self.tables: list[dict] = []
         self._shortlist = None
         self.dfs: dict = {}
@@ -65,7 +81,8 @@ class QuestionBundle:
                 "var": var, "report_id": c["report_id"],
                 "table_pos": int(c["table_pos"]), "page": c.get("page"),
                 "unit_scale": us, "unit_source": m.get("unit_source", "none"),
-                "report_year": int(m["year"]), "csv_text": csv_text,
+                "report_year": int(m["year"]),
+                "context": str(m.get("context") or ""), "csv_text": csv_text,
             })
             self.dfs[var] = df_roundtrip(csv_text)
 
@@ -74,11 +91,73 @@ class QuestionBundle:
         model chooses among ~8 rows instead of scanning every table."""
         if self._shortlist is None:
             variants = self.route.get("metric_variants") or [self.route.get("metric_norm", "")]
-            self._shortlist = build_shortlist(
+            generic = build_shortlist(
                 self.tables, variants, self.route.get("years") or [],
-                top_n=top_n, encoder=encoder,
+                top_n=max(24, top_n * 2), encoder=encoder,
                 question=self.question)
-        return self._shortlist
+            self._shortlist = self._requirement_shortlist(generic, encoder)
+        requirement_count = len(self.route.get("evidence_requirements", []))
+        effective_top_n = max(top_n, min(24, requirement_count))
+        return self._shortlist[:effective_top_n]
+
+    def _requirement_shortlist(self, generic, encoder=None):
+        """Reserve row candidates per operand, then fill with global matches."""
+        requirements = self.route.get("evidence_requirements", [])
+        if len(requirements) <= 1:
+            return generic
+        selected, seen = [], set()
+        for requirement in requirements:
+            ticker = str(requirement.get("ticker") or "").upper()
+            year = requirement.get("year")
+            tables = [
+                table for table in self.tables
+                if (not ticker or str(table["report_id"]).split("_")[0].upper() == ticker)
+                and (year is None or int(table.get("report_year") or 0)
+                     in {int(year), int(year) + 1})
+            ]
+            if not tables:
+                continue
+            matches = build_shortlist(
+                tables,
+                requirement_linking_variants(requirement),
+                [int(year)] if year is not None else [],
+                top_n=4,
+                encoder=encoder,
+                min_score=62.0,
+                question=str(requirement.get("metric_label") or ""),
+            )
+            matches = [
+                candidate for candidate in matches
+                if candidate_matches_requirement(candidate, requirement)
+            ]
+            if not matches:
+                continue
+            candidate = matches[0]
+            key = (candidate.var, candidate.row, candidate.col)
+            if key not in seen:
+                selected.append(candidate)
+                seen.add(key)
+        for candidate in generic:
+            key = (candidate.var, candidate.row, candidate.col)
+            if key not in seen:
+                selected.append(candidate)
+                seen.add(key)
+        return selected
+
+    def _evidence_plan_block(self) -> str:
+        requirements = self.route.get("evidence_requirements", [])
+        if len(requirements) <= 1:
+            return ""
+        needed = ", ".join(
+            f"{r.get('ticker')}/{r.get('year')}/{r.get('metric_key')}"
+            for r in requirements[:24]
+        )
+        state = self.evidence
+        return (
+            "EVIDENCE REQUIRED (locate every operand before calculating): "
+            f"{needed}\nRETRIEVAL COVERAGE: {state['covered']}/{state['required']}"
+            f" complete={state['complete']}\n"
+        )
 
     def select_messages(self, encoder=None) -> list[dict]:
         """Selection mode: the model only picks shortlist rows + an operation."""
@@ -90,6 +169,7 @@ class QuestionBundle:
                           "ENTITIES/PERIODS NEEDED: " + ", ".join(
                               f"{f.get('ticker')}/{f.get('year')}"
                               for f in plan.get("facts", [])[:8]))
+        plan_block += self._evidence_plan_block()
         return [{"role": "system", "content": SELECT_SYSTEM},
                 {"role": "user", "content": build_select_user(
                     self.question, self.route,
@@ -107,6 +187,7 @@ class QuestionBundle:
                           "FACTS TO LOCATE: " + ", ".join(
                               f"{f.get('ticker')}/{f.get('year')}/{f.get('doc_type')}"
                               for f in plan.get("facts", [])[:8]) + "\n")
+        plan_block += self._evidence_plan_block()
         return [{"role": "system", "content": SYSTEM},
                 {"role": "user", "content": build_user(
                     self.question, self.route, tables,
@@ -294,7 +375,8 @@ def run_codegen(retrieval_path: Path, store_dir: Path, out_path: Path, client,
                 rec = _selection_result(b, samples, encoder)
                 if rec is not None:
                     results[b.id] = _arbitrated(b, rule_answers.get(b.id), rec,
-                                                1, 1)
+                                                int(rec.get("votes", 1)),
+                                                max(1, len(samples)))
             _flush(out_path, recs, results)
             dt, elapsed = time.time() - t0, time.time() - t_start
             print(f"[chunk {ci+1}/{n_chunks}] {len(part)}q in {dt/60:.1f}min | "
@@ -418,9 +500,18 @@ def _selection_result(b: QuestionBundle, samples, encoder) -> dict | None:
     cands = b.shortlist(encoder, top_n=12)
     if not cands:
         return None
+    valid = []
     for text in samples:
         sel = parse_selection(text)
         if sel is None or sel.op == "none":
+            continue
+        requirements = b.route.get("evidence_requirements", [])
+        if not selection_matches_route(sel, b.route, requirements):
+            continue
+        coverage = requirement_coverage(
+            sel, cands, requirements,
+        )
+        if not coverage["complete"]:
             continue
         answer, query, err = synthesize(sel, cands, b.route)
         if err or answer is None:
@@ -428,12 +519,27 @@ def _selection_result(b: QuestionBundle, samples, encoder) -> dict | None:
         ex = _run_validated(b, query)          # the query must reproduce it
         if ex["status"] != "ok" or abs(ex["value"] - answer) > 0.011:
             continue
-        out = _final(b, round(ex["value"], 2), query, "llm_select",
-                     semantic=ex.get("semantic"))
-        out["detail"] = f"op={sel.op} operands={sel.operands}"
-        out["detail_conf"] = sel_conf(sel, cands, answer, b.route)
-        return out
-    return None
+        key = (sel.op, tuple(sel.operands))
+        valid.append((key, sel, answer, query, ex, coverage))
+    if not valid:
+        return None
+
+    winner, votes = Counter(item[0] for item in valid).most_common(1)[0]
+    # Self-consistency must mean agreement, not merely "at least one sample
+    # parsed". For n=3 this accepts 2/3 or 3/3 and rejects a three-way split.
+    if len(samples) > 1 and votes <= len(samples) // 2:
+        return None
+    _key, sel, answer, query, ex, coverage = next(
+        item for item in valid if item[0] == winner
+    )
+    out = _final(
+        b, round(ex["value"], 2), query, "llm_select",
+        votes=votes, n_ok=len(valid), semantic=ex.get("semantic"),
+    )
+    out["detail"] = f"op={sel.op} operands={sel.operands} consensus={votes}/{len(samples)}"
+    out["detail_conf"] = sel_conf(sel, cands, answer, b.route)
+    out["selection_evidence"] = coverage
+    return out
 
 
 def _arbitrated(b: QuestionBundle, rule: dict | None, llm_rec: dict,
@@ -473,6 +579,9 @@ def _rule_result(b: QuestionBundle, encoder=None) -> dict | None:
             out["detail"] = fa.detail
             out["detail_conf"] = fa.confidence
             return out
+
+    if requires_formula_solver(b.route):
+        return None
 
     ca = try_composite_answer(b.route, b.tables, encoder=encoder)
     if ca.ok:

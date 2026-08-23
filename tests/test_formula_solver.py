@@ -3,12 +3,18 @@ import unittest
 
 import pandas as pd
 
-from vifinqa.codegen.formula_solver import try_formula_answer
+from vifinqa.codegen.formula_solver import (
+    build_compositional_ranking_plan,
+    requires_formula_solver,
+    try_formula_answer,
+)
 
 
-def _table(var, report_id, rows, table_pos=1):
+def _table(var, report_id, rows, table_pos=1,
+           context="Báo cáo kết quả hoạt động kinh doanh Bảng cân đối kế toán"):
     return {"var": var, "report_id": report_id, "table_pos": table_pos,
             "report_year": int(report_id.split("_")[-2]),
+            "context": context,
             "csv_text": pd.DataFrame(rows).to_csv(index=False)}
 
 
@@ -134,6 +140,263 @@ class FormulaSolverTests(unittest.TestCase):
         self.assertEqual(ca.answer, 2.0)
         self.assertEqual(_eval(ca.pandas_query, tables), 2.0)
 
+    def test_year_ranking_returns_argmax_year_and_reads_every_period(self):
+        q = ("Doanh thu thuần của AAA cao nhất trong các năm 2022, 2023 và "
+             "2024 là vào năm nào?")
+        tables = [
+            _table("df1", "AAA_financial_statements_2022_consolidated",
+                   [_row("Doanh thu thuần", 100.0, code="10", col_name="2022")]),
+            _table("df2", "AAA_financial_statements_2023_consolidated",
+                   [_row("Doanh thu thuần", 180.0, code="10", col_name="2023")]),
+            _table("df3", "AAA_financial_statements_2024_consolidated",
+                   [_row("Doanh thu thuần", 120.0, code="10", col_name="2024")]),
+        ]
+        route = _route(
+            q, ["AAA"], "year", "ranking", "doanh thu thuan",
+            years=[2022, 2023, 2024])
+        route["plan"].update(
+            dimension="year", projection="year", direction="max")
+
+        ca = try_formula_answer(route, tables)
+
+        self.assertTrue(ca.ok, ca.detail)
+        self.assertEqual(ca.answer, 2023.0)
+        self.assertEqual(_eval(ca.pandas_query, tables), 2023.0)
+        self.assertTrue(all(var in ca.pandas_query for var in ("df1", "df2", "df3")))
+        self.assertIn("formula_year_ranking", ca.detail)
+
+    def test_year_ranking_treats_nam_nao_co_as_direct(self):
+        q = "Năm nào có số dư tiền cao nhất trong các năm 2023 và 2024?"
+        tables = [
+            _table("df1", "AAA_financial_statements_2023_consolidated",
+                   [_row("Tiền và các khoản tương đương tiền", 100.0,
+                         code="110", col_name="2023")]),
+            _table("df2", "AAA_financial_statements_2024_consolidated",
+                   [_row("Tiền và các khoản tương đương tiền", 120.0,
+                         code="110", col_name="2024")]),
+        ]
+        route = _route(q, ["AAA"], "year", "ranking",
+                       "tien va cac khoan tuong duong tien", [2023, 2024])
+
+        ca = try_formula_answer(route, tables)
+
+        self.assertTrue(ca.ok, ca.detail)
+        self.assertEqual(ca.answer, 2024.0)
+
+    def test_year_ranking_does_not_read_viet_nam_co_as_nested(self):
+        q = ("Ngân hàng Đầu tư và Phát triển Việt Nam có các khoản phải thu "
+             "bên ngoài lớn nhất vào năm nào trong các năm 2023 và 2024?")
+        tables = [
+            _table("df1", "AAA_financial_statements_2023_consolidated",
+                   [_row("Các khoản phải thu bên ngoài", 100.0,
+                         col_name="2023")]),
+            _table("df2", "AAA_financial_statements_2024_consolidated",
+                   [_row("Các khoản phải thu bên ngoài", 120.0,
+                         col_name="2024")]),
+        ]
+        route = _route(q, ["AAA"], "year", "ranking",
+                       "cac khoan phai thu ben ngoai", [2023, 2024])
+
+        ca = try_formula_answer(route, tables)
+
+        self.assertTrue(ca.ok, ca.detail)
+        self.assertEqual(ca.answer, 2024.0)
+
+    def test_year_ranking_does_not_read_cong_ty_co_phan_as_nested(self):
+        q = ("Tổng tiền của Công ty cổ phần Bluemarq Group cao nhất vào năm "
+             "nào trong các năm 2023 và 2024?")
+        tables = [
+            _table("df1", "AAA_financial_statements_2023_consolidated",
+                   [_row("Tiền và các khoản tương đương tiền", 100.0,
+                         code="110", col_name="2023")]),
+            _table("df2", "AAA_financial_statements_2024_consolidated",
+                   [_row("Tiền và các khoản tương đương tiền", 120.0,
+                         code="110", col_name="2024")]),
+        ]
+        route = _route(q, ["AAA"], "year", "ranking",
+                       "tien va cac khoan tuong duong tien", [2023, 2024])
+
+        ca = try_formula_answer(route, tables)
+
+        self.assertTrue(ca.ok, ca.detail)
+        self.assertEqual(ca.answer, 2024.0)
+
+    def test_year_ranking_uses_note_context_for_named_counterparty(self):
+        q = ("Năm nào có số dư phải trả cho Công ty Liên doanh TNHH Crown "
+             "Sài Gòn cao nhất trong các năm 2023 và 2024?")
+        tables = [
+            _table("df1", "AAA_financial_statements_2023_separate",
+                   [_row("Công ty Liên doanh TNHH Crown Sài Gòn", 900.0,
+                         col_name="2023")], 1, "Đầu tư vào công ty liên kết"),
+            _table("df2", "AAA_financial_statements_2023_separate",
+                   [_row("Công ty Liên doanh TNHH Crown Sài Gòn", 100.0,
+                         col_name="2023")], 2, "Phải trả người bán ngắn hạn"),
+            _table("df3", "AAA_financial_statements_2024_separate",
+                   [_row("Công ty Liên doanh TNHH Crown Sài Gòn", 800.0,
+                         col_name="2024")], 1, "Đầu tư vào công ty liên kết"),
+            _table("df4", "AAA_financial_statements_2024_separate",
+                   [_row("Công ty Liên doanh TNHH Crown Sài Gòn", 120.0,
+                         col_name="2024")], 2, "Phải trả người bán ngắn hạn"),
+        ]
+        route = _route(q, ["AAA"], "year", "ranking",
+                       "phai tra cho cong ty lien doanh tnhh crown sai gon",
+                       [2023, 2024])
+        route["doc_type"] = "separate"
+
+        ca = try_formula_answer(route, tables)
+
+        self.assertTrue(ca.ok, ca.detail)
+        self.assertEqual(ca.answer, 2024.0)
+        self.assertNotIn("df1", ca.pandas_query)
+        self.assertNotIn("df3", ca.pandas_query)
+
+    def test_year_ranking_supports_argmin(self):
+        q = "Tổng tài sản của AAA thấp nhất trong giai đoạn 2022-2024 là năm nào?"
+        tables = [
+            _table("df1", "AAA_financial_statements_2022_consolidated",
+                   [_row("Tổng tài sản", 100.0, code="270", col_name="2022")]),
+            _table("df2", "AAA_financial_statements_2023_consolidated",
+                   [_row("Tổng tài sản", 80.0, code="270", col_name="2023")]),
+            _table("df3", "AAA_financial_statements_2024_consolidated",
+                   [_row("Tổng tài sản", 120.0, code="270", col_name="2024")]),
+        ]
+        route = _route(
+            q, ["AAA"], "year", "ranking", "tong tai san",
+            years=[2022, 2023, 2024])
+        route["plan"].update(
+            dimension="year", projection="year", direction="min")
+
+        ca = try_formula_answer(route, tables)
+
+        self.assertTrue(ca.ok, ca.detail)
+        self.assertEqual(ca.answer, 2023.0)
+        self.assertEqual(_eval(ca.pandas_query, tables), 2023.0)
+
+    def test_year_ranking_supports_exact_formula_operands(self):
+        q = "Biên lợi nhuận gộp của AAA cao nhất trong các năm 2023-2024 là năm nào?"
+        tables = [
+            _table("df1", "AAA_financial_statements_2023_consolidated", [
+                _row("Lợi nhuận gộp", 20.0, code="20", col_name="2023", row=1),
+                _row("Doanh thu thuần", 100.0, code="10", col_name="2023", row=2),
+            ]),
+            _table("df2", "AAA_financial_statements_2024_consolidated", [
+                _row("Lợi nhuận gộp", 30.0, code="20", col_name="2024", row=1),
+                _row("Doanh thu thuần", 100.0, code="10", col_name="2024", row=2),
+            ]),
+        ]
+        route = _route(
+            q, ["AAA"], "year", "ranking", "bien loi nhuan gop",
+            years=[2023, 2024])
+        route["plan"].update(
+            dimension="year", projection="year", direction="max")
+
+        ca = try_formula_answer(route, tables)
+
+        self.assertTrue(ca.ok, ca.detail)
+        self.assertEqual(ca.answer, 2024.0)
+        self.assertEqual(_eval(ca.pandas_query, tables), 2024.0)
+
+    def test_year_ranking_fails_closed_on_missing_period(self):
+        q = "Doanh thu thuần của AAA cao nhất trong các năm 2023-2024 là năm nào?"
+        tables = [_table(
+            "df1", "AAA_financial_statements_2024_consolidated",
+            [_row("Doanh thu thuần", 120.0, code="10", col_name="2024")],
+        )]
+        ca = try_formula_answer(
+            _route(q, ["AAA"], "year", "ranking", "doanh thu thuan",
+                   years=[2023, 2024]),
+            tables,
+        )
+        self.assertFalse(ca.ok)
+
+    def test_year_ranking_rejects_prior_value_when_current_cell_is_dash(self):
+        q = "Năm nào hàng hóa có giá trị lớn nhất trong các năm 2024 và 2025?"
+        tables = [
+            _table(
+                "df1", "AAA_financial_statements_2024_consolidated",
+                [_row("Hàng hóa", 800.0, col_name="Đơn vị tính: VND")],
+                context="9. Hàng tồn kho",
+            ),
+            _table(
+                "df2", "AAA_financial_statements_2025_consolidated",
+                [_row("Hàng hóa -", 1_220_617_073.0,
+                      col_name="Đơn vị tính: VND")],
+                context="9. Hàng tồn kho",
+            ),
+        ]
+        ca = try_formula_answer(
+            _route(q, ["AAA"], "year", "ranking", "hang hoa",
+                   years=[2024, 2025]),
+            tables,
+        )
+
+        self.assertFalse(ca.ok)
+
+    def test_year_ranking_fails_closed_on_tie(self):
+        q = "Doanh thu thuần của AAA cao nhất trong các năm 2023-2024 là năm nào?"
+        tables = [
+            _table("df1", "AAA_financial_statements_2023_consolidated",
+                   [_row("Doanh thu thuần", 100.0, code="10", col_name="2023")]),
+            _table("df2", "AAA_financial_statements_2024_consolidated",
+                   [_row("Doanh thu thuần", 100.0, code="10", col_name="2024")]),
+        ]
+        ca = try_formula_answer(
+            _route(q, ["AAA"], "year", "ranking", "doanh thu thuan",
+                   years=[2023, 2024]),
+            tables,
+        )
+        self.assertFalse(ca.ok)
+        self.assertIn("tie", ca.detail)
+
+    def test_year_ranking_rejects_parent_row_for_child_metric(self):
+        q = ("Tài sản cố định vô hình của AAA cao nhất trong các năm 2023-2024 "
+             "là năm nào?")
+        tables = [
+            _table("df1", "AAA_financial_statements_2023_consolidated",
+                   [_row("Tài sản cố định", 100.0, code="220", col_name="2023")]),
+            _table("df2", "AAA_financial_statements_2024_consolidated",
+                   [_row("Tài sản cố định", 120.0, code="220", col_name="2024")]),
+        ]
+        ca = try_formula_answer(
+            _route(q, ["AAA"], "year", "ranking", "tai san co dinh vo hinh",
+                   years=[2023, 2024]),
+            tables,
+        )
+        self.assertFalse(ca.ok)
+
+    def test_year_ranking_rejects_detail_row_for_aggregate_metric(self):
+        q = "Tổng vốn chủ sở hữu của AAA cao nhất trong các năm 2023-2024 là năm nào?"
+        tables = [
+            _table("df1", "AAA_financial_statements_2023_consolidated",
+                   [_row("Quỹ khác thuộc vốn chủ sở hữu", 100.0,
+                         col_name="2023")]),
+            _table("df2", "AAA_financial_statements_2024_consolidated",
+                   [_row("Quỹ khác thuộc vốn chủ sở hữu", 120.0,
+                         col_name="2024")]),
+        ]
+        ca = try_formula_answer(
+            _route(q, ["AAA"], "year", "ranking", "von chu so huu",
+                   years=[2023, 2024]),
+            tables,
+        )
+        self.assertFalse(ca.ok)
+
+    def test_year_ranking_does_not_drop_ratio_denominator(self):
+        q = ("Năm nào AAA có tỷ trọng giá vốn cho thuê đất trên tổng giá vốn "
+             "hàng bán cao nhất trong các năm 2023-2024?")
+        tables = [
+            _table("df1", "AAA_financial_statements_2023_consolidated",
+                   [_row("Giá vốn hàng bán", 100.0, code="11", col_name="2023")]),
+            _table("df2", "AAA_financial_statements_2024_consolidated",
+                   [_row("Giá vốn hàng bán", 120.0, code="11", col_name="2024")]),
+        ]
+        ca = try_formula_answer(
+            _route(q, ["AAA"], "year", "ranking", "gia von hang ban",
+                   years=[2023, 2024]),
+            tables,
+        )
+        self.assertFalse(ca.ok)
+
     def test_direct_gross_margin(self):
         q = "Biên lợi nhuận gộp của AAA năm 2024 là bao nhiêu phần trăm?"
         tables = [_table("df1", "AAA_financial_statements_2024_consolidated", [
@@ -177,6 +440,26 @@ class FormulaSolverTests(unittest.TestCase):
         self.assertEqual(ca.answer, 0.9)
         self.assertEqual(_eval(ca.pandas_query, tables), 0.9)
         self.assertIn("formula_nested", ca.detail)
+
+    def test_nested_ranking_does_not_fall_back_when_answer_formula_is_missing(self):
+        q = ("Năm 2024, hệ số thanh toán hiện hành của doanh nghiệp có "
+             "hệ số nợ phải trả trên vốn chủ sở hữu cao nhất là bao nhiêu lần?")
+        tables = [
+            _table("df1", "AAA_financial_statements_2024_consolidated", [
+                _row("Nợ phải trả", 120.0, row=1),
+                _row("Vốn chủ sở hữu", 100.0, row=2),
+            ]),
+            _table("df2", "BBB_financial_statements_2024_consolidated", [
+                _row("Nợ phải trả", 180.0, row=1),
+                _row("Vốn chủ sở hữu", 100.0, row=2),
+            ]),
+        ]
+        route = _route(q, ["AAA", "BBB"], "ratio", "ranking")
+
+        ca = try_formula_answer(route, tables)
+
+        self.assertFalse(ca.ok)
+        self.assertTrue(requires_formula_solver(route))
 
     def test_nested_ranking_by_cfo_over_operating_profit(self):
         q = ("Năm 2024, trong hai công ty AAA và BBB, doanh nghiệp có tỷ lệ "
@@ -237,6 +520,79 @@ class FormulaSolverTests(unittest.TestCase):
         self.assertTrue(ca.ok, ca.detail)
         self.assertEqual(ca.answer, 3.0)
         self.assertEqual(_eval(ca.pandas_query, tables), 3.0)
+
+    def test_typed_nested_plan_separates_selector_and_projection_modes(self):
+        q = ("Từ năm 2023 đến 2024, trong nhóm AAA và BBB, tại doanh nghiệp có "
+             "tỷ lệ phần trăm tăng doanh thu thuần cao nhất, tỷ lệ phần trăm "
+             "tăng của tổng chi phí bán hàng và chi phí quản lý doanh nghiệp "
+             "là bao nhiêu %?")
+        route = _route(q, ["AAA", "BBB"], "percent", "ranking",
+                       years=[2023, 2024])
+
+        plan = build_compositional_ranking_plan(route)
+
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.dimension, "entity")
+        self.assertEqual(plan.selector.match.spec.name, "net_revenue")
+        self.assertEqual(plan.selector.mode, "growth")
+        self.assertEqual(plan.projection.match.spec.name, "sga_expense")
+        self.assertEqual(plan.projection.mode, "growth")
+
+    def test_typed_nested_plan_finds_selector_after_extreme_phrase(self):
+        q = ("Trong nhóm AAA và BBB, doanh nghiệp có mức tăng lớn nhất từ năm "
+             "2023 đến 2024 của tỷ lệ 365 lần hàng tồn kho bình quân đầu kỳ "
+             "và cuối kỳ trên giá vốn hàng bán có tỷ lệ lợi nhuận gộp trên "
+             "doanh thu thuần thay đổi bao nhiêu điểm phần trăm?")
+        route = _route(q, ["AAA", "BBB"], "percentage_point", "ranking",
+                       years=[2023, 2024])
+
+        plan = build_compositional_ranking_plan(route)
+
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.selector.match.spec.name, "inventory_days")
+        self.assertEqual(plan.selector.mode, "delta")
+        self.assertEqual(plan.projection.match.spec.name, "gross_margin")
+        self.assertEqual(plan.projection.mode, "delta")
+
+    def test_typed_nested_inventory_days_selects_then_projects_margin_change(self):
+        q = ("Trong nhóm AAA và BBB, doanh nghiệp có mức tăng lớn nhất từ năm "
+             "2023 đến 2024 của tỷ lệ 365 lần hàng tồn kho bình quân đầu kỳ "
+             "và cuối kỳ trên giá vốn hàng bán có tỷ lệ lợi nhuận gộp trên "
+             "doanh thu thuần thay đổi bao nhiêu điểm phần trăm?")
+        tables = []
+        values = {
+            "AAA": {2022: (100, 100, 20), 2023: (100, 100, 20),
+                    2024: (200, 100, 30)},
+            "BBB": {2022: (100, 100, 20), 2023: (100, 100, 20),
+                    2024: (110, 100, 25)},
+        }
+        index = 1
+        for ticker, by_year in values.items():
+            for year, (inventory, cogs, gross_profit) in by_year.items():
+                tables.append(_table(
+                    f"df{index}",
+                    f"{ticker}_financial_statements_{year}_consolidated",
+                    [
+                        _row("Hàng tồn kho", inventory, code="140",
+                             col_name=str(year), row=1),
+                        _row("Giá vốn hàng bán", cogs, code="11",
+                             col_name=str(year), row=2),
+                        _row("Lợi nhuận gộp", gross_profit, code="20",
+                             col_name=str(year), row=3),
+                        _row("Doanh thu thuần", 100, code="10",
+                             col_name=str(year), row=4),
+                    ],
+                ))
+                index += 1
+        route = _route(q, ["AAA", "BBB"], "percentage_point", "ranking",
+                       years=[2023, 2024])
+
+        ca = try_formula_answer(route, tables)
+
+        self.assertTrue(ca.ok, ca.detail)
+        self.assertEqual(ca.answer, 10.0)
+        self.assertEqual(_eval(ca.pandas_query, tables), 10.0)
+        self.assertIn("formula_nested_v3", ca.detail)
 
     def test_interest_coverage_rejects_cash_flow_interest_paid(self):
         q = "Hệ số khả năng thanh toán lãi vay của AAA năm 2024 là bao nhiêu lần?"

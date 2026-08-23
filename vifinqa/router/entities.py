@@ -25,7 +25,10 @@ _YEAR_RANGE = re.compile(
     r"(?:nam\s+)?(20[0-2]\d)(?!\d)"
 )
 
-SEPARATE_HINTS = ("cong ty me", "bao cao rieng", "rieng le", "don le", "bctc rieng")
+SEPARATE_HINTS = (
+    "cong ty me", "bao cao tai chinh rieng", "bao cao rieng", "rieng le",
+    "don le", "bctc rieng",
+)
 GROWTH_HINTS = ("tang truong", "so voi", "thay doi", "bien dong", "tang giam", "chenh lech")
 PERCENT_HINTS = (
     "phan tram", "ty le", "ty suat", "ty trong", "bien loi nhuan",

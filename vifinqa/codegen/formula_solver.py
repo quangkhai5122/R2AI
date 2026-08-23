@@ -13,14 +13,25 @@ the normal composite/LLM path keeps control.
 """
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Callable
 
-from ..finance.metrics import get_metric
+from ..finance.metrics import (
+    find_metrics,
+    get_metric,
+    metric_keys,
+    metric_uses_absolute_value,
+)
 from ..utils.viet_num import parse_vn_number
 from ..utils.viet_text import strip_diacritics
-from .fact_resolver import ResolvedFact, resolve_fact
+from .fact_resolver import (
+    ResolvedFact,
+    distinct_cells,
+    resolve_fact,
+    resolve_requirement,
+)
 from .rule_composite import CompositeAnswer, _FactView
 from .units import check_answer_unit
 
@@ -42,6 +53,7 @@ class FormulaSpec:
     kind: str                      # ratio | percent
     value_fn: Callable[[list[float]], float]
     expr_fn: Callable[[list[ResolvedFact]], str]
+    period_offsets: tuple[int, ...] = ()
 
 
 @dataclass
@@ -53,6 +65,7 @@ class FormulaValue:
     expr: str
     resolved: list[ResolvedFact]
     score: float
+    evidence_years: tuple[int | None, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -77,6 +90,21 @@ class Condition:
         return self.spec.name if self.spec else self.metric
 
 
+@dataclass(frozen=True)
+class CalculationNode:
+    match: FormulaMatch
+    mode: str                      # level | growth | delta | decrease | cagr
+
+
+@dataclass(frozen=True)
+class CompositionalRankingPlan:
+    dimension: str                 # entity | year
+    direction: str                 # max | min
+    selector: CalculationNode
+    projection: CalculationNode
+    filters: tuple[Condition, ...] = ()
+
+
 @dataclass
 class Population:
     tickers: list[str]
@@ -94,8 +122,12 @@ def try_formula_answer(route: dict, tables: list[dict], encoder=None,
     if output_type == "count" or op == "count":
         return _try_count(route, tables, encoder, min_score)
     if op == "ranking":
+        if output_type == "year":
+            return _try_year_ranking(route, tables, encoder, min_score)
         nested = _try_nested_ranking(route, tables, encoder, min_score)
         if nested.ok:
+            return nested
+        if _looks_nested_selector(route.get("question", "")):
             return nested
         return _try_formula_ranking(route, tables, encoder, min_score)
     if op in {"difference", "growth_pct", "average"} or output_type == "percentage_point":
@@ -112,6 +144,20 @@ def try_formula_answer(route: dict, tables: list[dict], encoder=None,
             return temporal
         return _try_direct_formula(route, tables, encoder, min_score)
     return CompositeAnswer(ok=False, detail=f"formula solver skipped op={op}")
+
+
+def requires_formula_solver(route: dict) -> bool:
+    """Whether generic lookup/composite fallbacks would change the semantics."""
+    plan = route.get("plan") or {}
+    op = plan.get("op", "lookup")
+    question = route.get("question", "")
+    if route.get("output_type") == "count" or op == "count":
+        return True
+    if route.get("output_type") == "year":
+        return True
+    if _looks_nested_selector(question):
+        return True
+    return bool(_detected_specs(question))
 
 
 def _try_count(route: dict, tables: list[dict], encoder, min_score: float) -> CompositeAnswer:
@@ -366,14 +412,14 @@ def _try_temporal_entity_count(route: dict, tables: list[dict], encoder,
         resolved=resolved)
 
 
-def _try_nested_ranking(route: dict, tables: list[dict], encoder,
-                        min_score: float) -> CompositeAnswer:
+def build_compositional_ranking_plan(
+        route: dict) -> CompositionalRankingPlan | None:
     question = route.get("question", "")
     text = _plain(question)
     matches = _calculation_matches(question)
     ranked = _ranked_match(text, matches)
     if ranked is None:
-        return CompositeAnswer(ok=False, detail="nested ranking selector missing")
+        return None
     selector, extreme_start, want_min = ranked
     target = _target_match(matches, selector, extreme_start, text)
     if (target is not None
@@ -387,9 +433,46 @@ def _try_nested_ranking(route: dict, tables: list[dict], encoder,
             and _selector_is_direct_answer(text, selector)):
         target = selector
     if target is None:
-        return CompositeAnswer(ok=False, detail="nested ranking target missing")
+        return None
+
+    tickers = list(dict.fromkeys(route.get("tickers") or []))
+    years = sorted(set(_route_years(route)))
+    if len(tickers) >= 2:
+        dimension = "entity"
+    elif len(tickers) == 1 and len(years) >= 2:
+        dimension = "year"
+    else:
+        return None
+    temporal_selector = dimension == "entity" and len(years) >= 2
+    selector_mode = _value_mode(text, selector, extreme_start, temporal_selector)
+    projection_mode = _target_value_mode(
+        text, target, dimension == "entity" and len(years) >= 2)
+    conditions = tuple(
+        condition for condition in _parsed_conditions(route, question)
+        if condition.label not in {selector.spec.name, target.spec.name}
+    )
+    return CompositionalRankingPlan(
+        dimension=dimension,
+        direction="min" if want_min else "max",
+        selector=CalculationNode(selector, selector_mode),
+        projection=CalculationNode(target, projection_mode),
+        filters=conditions,
+    )
+
+
+def _try_nested_ranking(route: dict, tables: list[dict], encoder,
+                        min_score: float) -> CompositeAnswer:
+    question = route.get("question", "")
+    text = _plain(question)
+    typed = build_compositional_ranking_plan(route)
+    if typed is None:
+        return CompositeAnswer(ok=False, detail="typed nested ranking plan missing")
+    selector = typed.selector.match
+    target = typed.projection.match
+    want_min = typed.direction == "min"
     if "trung vi" in text:
-        return CompositeAnswer(ok=False, detail="nested ranking median filter unsupported")
+        return CompositeAnswer(ok=False,
+                               detail="nested ranking median filter unsupported")
     if "tu dau nam den cuoi nam" in text:
         return CompositeAnswer(ok=False, detail="nested ranking needs intra-year columns")
     if (re.search(r"\b\d+\s+(?:doanh nghiep|cong ty|ma)\b", text)
@@ -401,10 +484,9 @@ def _try_nested_ranking(route: dict, tables: list[dict], encoder,
     if any(w in text for w in ("gia su", "kich ban", "co the tang toi da",
                                 "truoc khi", "neu ")):
         return CompositeAnswer(ok=False, detail="nested ranking scenario unsupported")
-
     tickers = _candidate_tickers(route, tables)
     years = sorted(set(_route_years(route)))
-    if len(tickers) >= 2:
+    if typed.dimension == "entity" and len(tickers) >= 2:
         stated_n = _stated_population_size(text)
         if stated_n is not None and stated_n != len(tickers):
             return CompositeAnswer(
@@ -412,31 +494,29 @@ def _try_nested_ranking(route: dict, tables: list[dict], encoder,
                 detail=f"nested ranking population {len(tickers)}/{stated_n}")
         dimension = [(ticker, years[-1] if years else None) for ticker in tickers]
         entity_mode = True
-    elif len(tickers) == 1 and len(years) >= 2:
+    elif typed.dimension == "year" and len(tickers) == 1 and len(years) >= 2:
         dimension = [(tickers[0], year) for year in years]
         entity_mode = False
     else:
         return CompositeAnswer(ok=False, detail="nested ranking has no dimension")
 
-    temporal_selector = entity_mode and len(years) >= 2
-    selector_mode = _value_mode(text, selector, extreme_start, temporal_selector)
-    selector_ctx = text[max(0, selector.start - 65):extreme_start]
+    selector_mode = typed.selector.mode
+    selector_ctx = text[max(0, selector.start - 65):selector.start]
     if (not entity_mode
             and any(w in selector_ctx for w in ("tang truong", "toc do tang"))):
         return CompositeAnswer(ok=False,
                                detail="nested year-over-year selector unsupported")
-    conditions = [c for c in _parsed_conditions(route, question)
-                  if c.label not in {selector.spec.name, target.spec.name}]
+    conditions = list(typed.filters)
 
     ranked_values, support, resolved = [], [], []
     for ticker, year in dimension:
-        if selector_mode == "level":
-            sv = _evaluate_formula(
-                selector.spec, ticker, year, route, tables, encoder, min_score)
-        else:
-            sv = _evaluate_change(
+        if selector_mode != "level" and entity_mode:
+            sv = _evaluate_change_exact(
                 selector.spec, ticker, years[0], years[-1], selector_mode,
                 route, tables, encoder, min_score)
+        else:
+            sv = _evaluate_formula_exact(
+                selector.spec, ticker, year, route, tables, encoder, min_score)
         if sv is None:
             return CompositeAnswer(ok=False,
                                    detail=f"nested selector unresolved {ticker}/{year}",
@@ -474,20 +554,26 @@ def _try_nested_ranking(route: dict, tables: list[dict], encoder,
     if not ranked_values:
         return CompositeAnswer(ok=False, detail="nested ranking filtered all candidates",
                                resolved=resolved)
-    chosen = (min(ranked_values, key=lambda x: x[2].value) if want_min
-              else max(ranked_values, key=lambda x: x[2].value))
+    ordered = sorted(ranked_values, key=lambda item: item[2].value,
+                     reverse=not want_min)
+    if len(ordered) > 1 and math.isclose(
+            ordered[0][2].value, ordered[1][2].value,
+            rel_tol=1e-12, abs_tol=1e-6):
+        return CompositeAnswer(ok=False, detail="nested ranking tie has no convention",
+                               resolved=resolved)
+    chosen = ordered[0]
     ticker, selected_year, _selector_value = chosen
 
-    target_mode = (_target_value_mode(text, target, len(years) >= 2)
-                   if route.get("output_type") == "percentage_point" else "level")
+    target_mode = typed.projection.mode
     if target_mode != "level" and entity_mode:
-        tv = _evaluate_change(target.spec, ticker, years[0], years[-1], target_mode,
-                              route, tables, encoder, min_score)
+        tv = _evaluate_change_exact(
+            target.spec, ticker, years[0], years[-1], target_mode,
+            route, tables, encoder, min_score)
     else:
         target_year = selected_year
         if not entity_mode and "nam sau nam" in text:
             target_year = int(selected_year) + 1
-        tv = _evaluate_formula(
+        tv = _evaluate_formula_exact(
             target.spec, ticker, target_year, route, tables, encoder, min_score)
     if tv is None:
         return CompositeAnswer(ok=False,
@@ -501,17 +587,39 @@ def _try_nested_ranking(route: dict, tables: list[dict], encoder,
     resolved.extend(tv.resolved)
     answer, answer_expr = _answer_value(tv, route)
     support_expr = " + ".join(support)
-    query = f"round(({answer_expr}) + 0 * ({support_expr}), 2)"
+    comparator = "<" if want_min else ">"
+    selected_expr = chosen[2].expr
+    comparisons = []
+    for candidate in ranked_values:
+        if candidate is chosen:
+            continue
+        comparisons.append(
+            f"(({selected_expr}) {comparator} ({candidate[2].expr}))")
+    selection_guard = " and ".join(comparisons) or "True"
+    query = (f"round((({answer_expr}) if ({selection_guard}) else 0.0) "
+             f"+ 0 * ({support_expr}), 2)")
     warn = check_answer_unit(answer, route.get("output_type", tv.spec.kind))
     if warn and "outside plausible range" in warn:
         return CompositeAnswer(ok=False, detail=f"nested unit guard: {warn}",
                                resolved=resolved)
+    resolved = _dedupe_resolved(resolved)
     return CompositeAnswer(
         ok=True, answer=answer, pandas_query=query,
-        confidence=_confidence(resolved, base=87.0),
-        detail=(f"formula_nested selector={selector.spec.name}/{selector_mode} "
-                f"target={target.spec.name}/{target_mode} picked={ticker}/{selected_year}"),
+        confidence=_confidence(resolved, base=93.0),
+        detail=(f"formula_nested_v3 selector={selector.spec.name}/{selector_mode} "
+                f"projection={target.spec.name}/{target_mode} "
+                f"picked={ticker}/{selected_year}"),
         resolved=resolved)
+
+
+def _dedupe_resolved(values: list[ResolvedFact]) -> list[ResolvedFact]:
+    seen, out = set(), []
+    for value in values:
+        key = (value.report_id, value.table_pos, value.row, value.col)
+        if key not in seen:
+            seen.add(key)
+            out.append(value)
+    return out
 
 
 def _try_formula_change(route: dict, tables: list[dict], encoder,
@@ -712,6 +820,206 @@ def _try_formula_ranking(route: dict, tables: list[dict], encoder,
                            resolved=resolved)
 
 
+def _try_year_ranking(route: dict, tables: list[dict], encoder,
+                      min_score: float) -> CompositeAnswer:
+    """Return the argmax/argmin year after resolving every period exactly."""
+    question = route.get("question", "")
+    plan = route.get("plan") or {}
+    tickers = _candidate_tickers(route, tables)
+    years = sorted(set(_route_years(route)))
+    if len(tickers) != 1 or len(years) < 2:
+        return CompositeAnswer(
+            ok=False, detail="year ranking needs one ticker and >=2 years")
+    if plan.get("dimension") not in {None, "", "year"}:
+        return CompositeAnswer(ok=False, detail="year ranking dimension mismatch")
+    if plan.get("projection") not in {None, "", "year"}:
+        return CompositeAnswer(ok=False, detail="year ranking projection mismatch")
+    if _looks_nested_selector(question):
+        return CompositeAnswer(ok=False, detail="year ranking looks nested")
+    if any(word in _plain(question) for word in (
+        "gia su", "kich ban", "trung vi", "nam sau nam", "nam lien truoc",
+    )):
+        return CompositeAnswer(ok=False, detail="year ranking selector unsupported")
+
+    direction = "min" if _wants_min(question) else "max"
+    if plan.get("direction") not in {None, "", direction}:
+        return CompositeAnswer(ok=False, detail="year ranking direction mismatch")
+
+    keys = list(dict.fromkeys(route.get("metric_keys") or metric_keys(
+        [route.get("metric_norm", ""), *(route.get("metric_variants") or [])],
+        expand_derived=False,
+    )))
+    specs = _detected_specs(question)
+    direct_key = ""
+    if len(keys) == 1 and not _looks_ratio_selector(question):
+        metric = get_metric(keys[0])
+        if not metric.is_derived:
+            direct_key = keys[0]
+
+    values: list[tuple[int, float, str]] = []
+    resolved: list[ResolvedFact] = []
+    if direct_key:
+        use_absolute = metric_uses_absolute_value(question, [direct_key])
+        for year in years:
+            requirement = _year_requirement(
+                route, tickers[0], year, direct_key)
+            found = resolve_requirement(
+                requirement, tables, encoder=encoder, min_score=min_score,
+                question=question,
+            )
+            if (found is None or not _resolved_supports_year(found, year)
+                    or not _resolved_value_sane(found)):
+                return CompositeAnswer(
+                    ok=False,
+                    detail=f"year ranking unresolved exact {direct_key}/{year}",
+                    resolved=resolved,
+                )
+            value = abs(found.value_vnd) if use_absolute else found.value_vnd
+            expr = f"abs({found.expr_vnd()})" if use_absolute else found.expr_vnd()
+            values.append((year, value, expr))
+            resolved.append(found)
+        detail_metric = direct_key
+    elif len(specs) == 1:
+        spec = specs[0]
+        for year in years:
+            found = _evaluate_formula_exact(
+                spec, tickers[0], year, route, tables, encoder, min_score)
+            if found is None:
+                return CompositeAnswer(
+                    ok=False,
+                    detail=f"year ranking unresolved exact formula {spec.name}/{year}",
+                    resolved=resolved,
+                )
+            values.append((year, found.value, found.expr))
+            resolved.extend(found.resolved)
+        detail_metric = spec.name
+    else:
+        return CompositeAnswer(
+            ok=False,
+            detail=f"year ranking metric keys={len(keys)} formulas={len(specs)}",
+        )
+
+    if not distinct_cells(resolved):
+        return CompositeAnswer(
+            ok=False, detail="year ranking evidence cells are not distinct",
+            resolved=resolved)
+    ordered = sorted(values, key=lambda item: item[1], reverse=direction == "max")
+    if len(ordered) > 1 and math.isclose(
+            ordered[0][1], ordered[1][1], rel_tol=1e-12, abs_tol=1e-6):
+        return CompositeAnswer(
+            ok=False, detail="year ranking tie has no convention", resolved=resolved)
+
+    answer = float(ordered[0][0])
+    query = f"round(float({_year_projection_expr(values, direction)}), 2)"
+    warn = check_answer_unit(answer, "year")
+    if warn:
+        return CompositeAnswer(
+            ok=False, detail=f"year ranking unit guard: {warn}", resolved=resolved)
+    return CompositeAnswer(
+        ok=True,
+        answer=answer,
+        pandas_query=query,
+        confidence=_confidence(resolved, base=94.0),
+        detail=(f"formula_year_ranking metric={detail_metric} "
+                f"direction={direction} n={len(years)}"),
+        resolved=resolved,
+    )
+
+
+def _year_requirement(route: dict, ticker: str, year: int,
+                      metric_key: str) -> dict:
+    matches = [
+        requirement for requirement in route.get("evidence_requirements") or []
+        if str(requirement.get("ticker") or "").upper() == ticker.upper()
+        and requirement.get("year") is not None
+        and int(requirement["year"]) == year
+        and str(requirement.get("metric_key") or "") == metric_key
+    ]
+    if matches:
+        return matches[0]
+    metric = get_metric(metric_key)
+    source_variants = [
+        str(value) for value in route.get("metric_variants") or []
+        if metric_key in metric_keys([str(value)], expand_derived=False)
+    ]
+    return {
+        "requirement_id": f"{ticker}|{year}|{metric_key}",
+        "ticker": ticker,
+        "year": year,
+        "doc_type": route.get("doc_type", "consolidated"),
+        "metric_key": metric_key,
+        "metric_label": metric.label,
+        "metric_variants": list(dict.fromkeys([*source_variants, *metric.variants])),
+        "statement": metric.statement,
+    }
+
+
+def _evaluate_formula_exact(spec: FormulaSpec, ticker: str, year: int,
+                            route: dict, tables: list[dict], encoder,
+                            min_score: float) -> FormulaValue | None:
+    resolved = []
+    evidence_years = _formula_operand_years(spec, year)
+    for operand, evidence_year in zip(spec.operands, evidence_years):
+        keys = metric_keys([operand.metric, *operand.variants], expand_derived=False)
+        if len(keys) != 1:
+            return None
+        requirement = _year_requirement(route, ticker, evidence_year, keys[0])
+        found = resolve_requirement(
+            requirement, tables, encoder=encoder, min_score=min_score,
+            # The full compositional question can mention both opening and
+            # closing periods. The operand year already identifies the desired
+            # cell, so row linking must not inherit a global period qualifier.
+            question=str(requirement.get("metric_label") or operand.metric),
+        )
+        if (found is None or not _operand_accepts(operand, found)
+                or not _resolved_supports_year(found, evidence_year)
+                or not _resolved_value_sane(found)):
+            return None
+        resolved.append(found)
+    try:
+        value = spec.value_fn([found.value_vnd for found in resolved])
+    except ZeroDivisionError:
+        return None
+    if not math.isfinite(value):
+        return None
+    return FormulaValue(
+        spec=spec, ticker=ticker, year=year, value=value,
+        expr=spec.expr_fn(resolved), resolved=resolved,
+        score=min(found.score for found in resolved),
+        evidence_years=evidence_years,
+    )
+
+
+def _formula_operand_years(spec: FormulaSpec,
+                           year: int | None) -> tuple[int | None, ...]:
+    offsets = spec.period_offsets or (0,) * len(spec.operands)
+    if len(offsets) != len(spec.operands):
+        raise ValueError(f"formula {spec.name}: period_offsets/operands mismatch")
+    return tuple(None if year is None else int(year) + offset for offset in offsets)
+
+
+def _year_projection_expr(values: list[tuple[int, float, str]],
+                          direction: str) -> str:
+    """Build a dynamic argmax/argmin expression that reads every candidate."""
+    comparator = "<" if direction == "min" else ">"
+    result = f"{values[-1][0]}.0"
+    for year, _value, expr in reversed(values[:-1]):
+        comparisons = [
+            f"(({expr}) {comparator} ({other_expr}))"
+            for other_year, _other_value, other_expr in values
+            if other_year != year
+        ]
+        result = f"({year}.0 if ({' and '.join(comparisons)}) else {result})"
+    return result
+
+
+def _looks_ratio_selector(question: str) -> bool:
+    text = _plain(question)
+    return any(value in text for value in (
+        "ty trong", "ty le", "chia cho", "tren tong", "so voi tong",
+    ))
+
+
 def _try_direct_formula(route: dict, tables: list[dict], encoder,
                         min_score: float) -> CompositeAnswer:
     question = route.get("question", "")
@@ -800,14 +1108,16 @@ def _direct_metric_accepts(cond: Condition, resolved: ResolvedFact,
 def _evaluate_formula(spec: FormulaSpec, ticker: str, year: int | None, route: dict,
                       tables: list[dict], encoder, min_score: float) -> FormulaValue | None:
     resolved = []
-    for op in spec.operands:
-        fact = _FactView({"ticker": ticker, "year": year, "doc_type": route.get("doc_type"),
+    evidence_years = _formula_operand_years(spec, year)
+    for op, evidence_year in zip(spec.operands, evidence_years):
+        fact = _FactView({"ticker": ticker, "year": evidence_year,
+                          "doc_type": route.get("doc_type"),
                           "metric": op.metric})
         r = resolve_fact(
             fact, tables, list(op.variants), encoder, min_score,
             question=route.get("question", ""))
         if (r is None or not _operand_accepts(op, r)
-                or not _resolved_supports_year(r, year)
+                or not _resolved_supports_year(r, evidence_year)
                 or not _resolved_value_sane(r)):
             return None
         resolved.append(r)
@@ -823,7 +1133,8 @@ def _evaluate_formula(spec: FormulaSpec, ticker: str, year: int | None, route: d
         return None
     return FormulaValue(spec=spec, ticker=ticker, year=year, value=value,
                         expr=spec.expr_fn(resolved), resolved=resolved,
-                        score=min(r.score for r in resolved))
+                        score=min(r.score for r in resolved),
+                        evidence_years=evidence_years)
 
 
 def _operand_accepts(operand: Operand, resolved: ResolvedFact) -> bool:
@@ -881,7 +1192,44 @@ def _evaluate_change(spec: FormulaSpec, ticker: str, start: int, end: int,
         expr = f"(({last.expr}) - ({first.expr}))"
     return FormulaValue(spec=spec, ticker=ticker, year=end, value=value, expr=expr,
                         resolved=first.resolved + last.resolved,
-                        score=min(first.score, last.score))
+                        score=min(first.score, last.score),
+                        evidence_years=first.evidence_years + last.evidence_years)
+
+
+def _evaluate_change_exact(spec: FormulaSpec, ticker: str, start: int, end: int,
+                           mode: str, route: dict, tables: list[dict], encoder,
+                           min_score: float) -> FormulaValue | None:
+    first = _evaluate_formula_exact(
+        spec, ticker, start, route, tables, encoder, min_score)
+    last = _evaluate_formula_exact(
+        spec, ticker, end, route, tables, encoder, min_score)
+    if first is None or last is None:
+        return None
+    if not _value_supports_year(first, start) or not _value_supports_year(last, end):
+        return None
+    if mode == "growth":
+        if first.value == 0:
+            return None
+        value = (last.value - first.value) / abs(first.value) * 100.0
+        expr = f"((({last.expr}) - ({first.expr})) / abs({first.expr}) * 100)"
+    elif mode == "decrease":
+        value = first.value - last.value
+        expr = f"(({first.expr}) - ({last.expr}))"
+    elif mode == "cagr":
+        if first.value <= 0:
+            return None
+        n = max(1, end - start)
+        value = ((last.value / first.value) ** (1.0 / n) - 1.0) * 100.0
+        expr = f"((({last.expr}) / ({first.expr})) ** (1/{n}) - 1) * 100"
+    else:
+        value = last.value - first.value
+        expr = f"(({last.expr}) - ({first.expr}))"
+    return FormulaValue(
+        spec=spec, ticker=ticker, year=end, value=value, expr=expr,
+        resolved=first.resolved + last.resolved,
+        score=min(first.score, last.score),
+        evidence_years=first.evidence_years + last.evidence_years,
+    )
 
 
 def _answer_value(value: FormulaValue, route: dict) -> tuple[float, str]:
@@ -904,8 +1252,11 @@ def _output_accepts_kind(output_type: str | None, kind: str) -> bool:
 def _value_supports_year(value: FormulaValue, year: int | None) -> bool:
     if year is None:
         return True
-    return all(_resolved_supports_year(resolved, year)
-               for resolved in value.resolved)
+    expected = value.evidence_years or (year,) * len(value.resolved)
+    return len(expected) == len(value.resolved) and all(
+        _resolved_supports_year(resolved, evidence_year)
+        for resolved, evidence_year in zip(value.resolved, expected)
+    )
 
 
 def _report_year(report_id: str) -> int | None:
@@ -1126,12 +1477,31 @@ def _all_spec_matches(question: str, specs: list[FormulaSpec]) -> list[FormulaMa
 def _calculation_matches(question: str) -> list[FormulaMatch]:
     formulas = _all_spec_matches(question, _FORMULAS)
     metrics = _all_spec_matches(question, _METRIC_SPECS)
+    fixed_keys = {spec.name for spec in _METRIC_SPECS}
+    for found in find_metrics(question, include_derived=False):
+        key = found.metric.key
+        if key in fixed_keys:
+            continue
+        metrics.append(FormulaMatch(
+            _direct_metric_formula(key), found.start, found.end, found.alias))
     # A one-line metric inside a longer formula phrase is an operand, not a
     # second calculation. A separate occurrence elsewhere remains available as
     # a ranking selector or filter.
     metrics = [m for m in metrics
                if not any(_overlap(m.start, m.end, f.start, f.end) for f in formulas)]
-    return sorted(formulas + metrics, key=lambda m: (m.start, m.end))
+    unique = {}
+    for match in formulas + metrics:
+        unique.setdefault((match.spec.name, match.start, match.end), match)
+    return sorted(unique.values(), key=lambda m: (m.start, m.end))
+
+
+def _direct_metric_formula(metric_key: str) -> FormulaSpec:
+    metric = get_metric(metric_key)
+    return FormulaSpec(
+        name=f"metric:{metric_key}", triggers=metric.variants,
+        operands=(_canonical_operand(metric_key),), kind="money",
+        value_fn=lambda values: values[0], expr_fn=_identity_expr,
+    )
 
 
 def _overlap(a0: int, a1: int, b0: int, b1: int) -> bool:
@@ -1147,12 +1517,16 @@ def _unique_matches(matches: list[FormulaMatch]) -> dict[str, FormulaMatch]:
 
 def _ranked_match(text: str, matches: list[FormulaMatch]):
     extrema = list(re.finditer(r"\b(cao nhat|lon nhat|thap nhat|nho nhat)\b", text))
-    choices = []
+    before, after = [], []
     for match in matches:
         for extreme in extrema:
             gap = extreme.start() - match.end
             if 0 <= gap <= 90:
-                choices.append((gap, match, extreme))
+                before.append((gap, match, extreme))
+            forward_gap = match.start - extreme.end()
+            if 0 <= forward_gap <= 170:
+                after.append((forward_gap, match, extreme))
+    choices = before or after
     if not choices:
         return None
     _gap, match, extreme = min(choices, key=lambda x: x[0])
@@ -1191,12 +1565,15 @@ def _value_mode(text: str, match: FormulaMatch, extreme_start: int,
                 temporal_allowed: bool) -> str:
     if not temporal_allowed:
         return "level"
-    ctx = text[max(0, match.start - 70):extreme_start]
+    if match.start >= extreme_start:
+        ctx = text[max(0, extreme_start - 45):match.start]
+    else:
+        ctx = text[max(0, match.start - 70):extreme_start]
     if "cagr" in ctx:
         return "cagr"
     if "muc giam" in ctx:
         return "decrease"
-    if any(w in ctx for w in ("tang truong", "toc do tang")):
+    if any(w in ctx for w in ("tang truong", "toc do tang", "phan tram tang")):
         return "growth"
     if any(w in ctx for w in ("muc thay doi", "muc tang")):
         return "delta"
@@ -1215,7 +1592,7 @@ def _target_value_mode(text: str, match: FormulaMatch,
         return "decrease"
     if "cagr" in before:
         return "cagr"
-    if any(w in before for w in ("tang truong", "toc do tang")):
+    if any(w in before for w in ("tang truong", "toc do tang", "phan tram tang")):
         return "growth"
     if re.match(r"\s*(?:co\s+)?(?:muc\s+)?thay doi\b", after):
         return "delta"
@@ -1351,12 +1728,15 @@ def _wants_max(question: str) -> bool:
 
 def _looks_nested_selector(question: str) -> bool:
     text = _plain(question)
-    if re.search(r"\b(?:cua|cho|tai)\s+(?:cong ty|doanh nghiep|ma|to chuc)\s+co\b",
+    if re.search(r"\b(?:cua|cho|tai)\s+(?:cong ty|doanh nghiep|ma|to chuc)\s+co(?!\s+phan\b)\b",
                  text):
         return True
-    if re.search(r"\b(?:cong ty|doanh nghiep|ma|to chuc)\s+co\b", text):
+    if re.search(r"\b(?:cong ty|doanh nghiep|ma|to chuc)\s+co(?!\s+phan\b)\b", text):
         return True
-    return bool(re.search(r"\bnam\s+(?:ma|co|ghi nhan)\b", text))
+    return bool(
+        re.search(r"\bnam\s+(?:ma|ghi nhan)\b", text)
+        or re.search(r"\b(?:tai|vao)\s+nam\s+co\b", text)
+    )
 
 
 def _has_complex_temporal_selector(question: str) -> bool:
@@ -1414,6 +1794,11 @@ def _interest_coverage_expr(rs: list[ResolvedFact]) -> str:
             f"/ abs({rs[1].expr_vnd()}))")
 
 
+def _inventory_days_expr(rs: list[ResolvedFact]) -> str:
+    return (f"(365 * (({rs[0].expr_vnd()} + {rs[1].expr_vnd()}) / 2) "
+            f"/ abs({rs[2].expr_vnd()}))")
+
+
 def _sum_expr(rs: list[ResolvedFact]) -> str:
     return f"({rs[0].expr_vnd()} + {rs[1].expr_vnd()})"
 
@@ -1451,6 +1836,7 @@ _FIXED_ASSETS = _canonical_operand("fixed_assets")
 _PRETAX_PROFIT = _canonical_operand("pretax_profit")
 _INTEREST_EXPENSE = _canonical_operand("interest_expense", strict_codes=False)
 _OPERATING_PROFIT = _canonical_operand("operating_profit")
+_COGS = _canonical_operand("cost_of_goods_sold")
 
 _DIRECT_METRIC_SPEC = FormulaSpec(
     "direct_metric", (), (), "money", lambda vals: vals[0], lambda rs: rs[0].expr_vnd())
@@ -1466,8 +1852,7 @@ _FORMULAS = [
     ),
     FormulaSpec(
         "current_ratio",
-        ("he so thanh toan hien hanh", "ty so thanh toan hien hanh",
-         "current ratio"),
+        ("he so thanh toan hien hanh", "ty so thanh toan hien hanh", "current ratio"),
         (_CURRENT_ASSETS, _CURRENT_LIABILITIES),
         "ratio",
         lambda v: _div(v[0], v[1]),
@@ -1476,7 +1861,8 @@ _FORMULAS = [
     FormulaSpec(
         "debt_equity",
         ("he so no phai tra tren von chu so huu", "no phai tra tren von chu so huu",
-         "d/e", "debt/equity"),
+         "ty le no phai tra tren von chu so huu",
+         "no phai tra chia cho von chu so huu", "d/e", "debt/equity"),
         (_LIABILITIES, _EQUITY),
         "ratio",
         lambda v: _div(v[0], v[1]),
@@ -1559,7 +1945,8 @@ _FORMULAS = [
     ),
     FormulaSpec(
         "roe",
-        ("roe", "loi nhuan sau thue tren von chu so huu"),
+        ("roe", "loi nhuan sau thue tren von chu so huu",
+         "ty le giua loi nhuan thuan sau thue hop nhat va von chu so huu"),
         (_NET_PROFIT, _EQUITY),
         "percent",
         lambda v: _div(v[0], v[1]) * 100.0,
@@ -1604,11 +1991,42 @@ _FORMULAS = [
     FormulaSpec(
         "interest_coverage",
         ("he so kha nang thanh toan lai vay", "kha nang thanh toan lai vay",
-         "loi nhuan truoc lai vay va thue", "ebit tren chi phi lai vay"),
+         "loi nhuan truoc lai vay va thue", "ebit tren chi phi lai vay",
+         "tong loi nhuan truoc thue va chi phi lai vay"),
         (_PRETAX_PROFIT, _INTEREST_EXPENSE),
         "ratio",
         lambda v: _div(v[0] + abs(v[1]), abs(v[1])),
         _interest_coverage_expr,
+    ),
+    FormulaSpec(
+        "cost_inventory_ratio",
+        ("ty le giua gia von hang ban tong cong va gia goc hang ton kho cuoi nam",
+         "gia von hang ban tren hang ton kho"),
+        (_COGS, _INVENTORY),
+        "ratio",
+        lambda v: _div(abs(v[0]), v[1]),
+        lambda rs: f"(abs({rs[0].expr_vnd()}) / {rs[1].expr_vnd()})",
+    ),
+    FormulaSpec(
+        "interest_pretax_ratio",
+        ("ty le giua chi phi lai vay va loi nhuan truoc thue",
+         "chi phi lai vay tren loi nhuan truoc thue"),
+        (_INTEREST_EXPENSE, _PRETAX_PROFIT),
+        "percent",
+        lambda v: _div(abs(v[0]), v[1]) * 100.0,
+        lambda rs: f"(abs({rs[0].expr_vnd()}) / {rs[1].expr_vnd()} * 100)",
+    ),
+    FormulaSpec(
+        "inventory_days",
+        ("365 lan hang ton kho binh quan dau ky va cuoi ky tren gia von hang ban",
+         "365 lan trung binh hang ton kho dau nam va cuoi nam tren gia von hang ban",
+         "hang ton kho binh quan nhan 365 roi chia cho gia von hang ban",
+         "365 nhan voi trung binh hang ton kho dau nam va cuoi nam roi chia cho gia von hang ban"),
+        (_INVENTORY, _INVENTORY, _COGS),
+        "ratio",
+        lambda v: 365.0 * ((v[0] + v[1]) / 2.0) / abs(v[2]),
+        _inventory_days_expr,
+        period_offsets=(-1, 0, 0),
     ),
 ]
 

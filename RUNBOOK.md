@@ -3,9 +3,8 @@
 > **File này là nguồn sự thật duy nhất về LỆNH CHẠY.** Mỗi khi pipeline đổi,
 > ghi đè trực tiếp vào đây (đừng tạo file mới) để không bị lạc phiên bản.
 >
-> Cập nhật lần cuối: **2026-08-04 (P2.0)** — thêm **`--llm-mode select`**:
-> model chỉ chọn dòng trong shortlist bằng JSON, ta sinh pandas. Xoá 3 lớp lỗi
-> đã audit ở lượt #12 (cột năm 35%, đơn vị 15%, regex 90% → **0%**).
+> Cập nhật lần cuối: **2026-08-21** — khóa formula-aware retrieval trên
+> leaderboard và chuyển Qwen unresolved sang majority self-consistency.
 
 ---
 
@@ -17,10 +16,14 @@
 | Payload schema | 2 (có `payload-manifest.json`, SHA-256) |
 | `TABLE_POS_MODE` | `line` (BTC xác nhận: vị trí = **số dòng** của `<table>`) |
 | `SUBMISSION_K` | 5 |
-| Retrieval artifact chuẩn | `artifacts/retrieval.jsonl` (phải là bản **P1**) |
-| Codegen artifact chuẩn | `artifacts/codegen_results.jsonl` |
-| Điểm tốt nhất đã nộp | #8: TABLES_F2 .4241 / DOCS_F2 .8628 / ANSWER .1285 / EXEC .1285 |
+| Retrieval chuẩn hiện tại | `artifacts/retrieval_canonical_v2_formula_operand_exact_w010.jsonl` |
+| Rule checkpoint tương ứng | `artifacts/codegen_rule_canonical_v2_formula_operand_exact_w010_k15.jsonl` |
+| Điểm tốt nhất đã nộp | TABLES_F2 .4892 / DOCS_F2 .9068 / ANSWER .2866 / EXEC .2866 |
 | Backend LLM Kaggle | `hf` (transformers). **vLLM không chạy trên T4** |
+
+`submission_formula_consensus_safe2_w010` là ablation thất bại: hai candidate
+`3/3` (ID 24, 996) đều không tăng Execution. Không dùng consensus/confidence
+làm verifier nếu chưa kiểm tra exact child-row và qualifier evidence.
 
 **Kiểm tra nhanh trạng thái trước mỗi phiên làm việc:**
 
@@ -173,6 +176,67 @@ mỗi fact ≈ 0.6.
 Nếu lỡ tạo `submission.zip` trong thư mục eval: xoá tay
 `artifacts\eval\eval_submission\submission.zip`.
 
+### 3.1 Formula eval v2 (bắt buộc trước khi sửa solver/retrieval phức hợp)
+
+Bộ này dùng `2.707` fact được xác minh bằng mã VAS + canonical label + cột năm
+tường minh. Với chỉ tiêu stock, gold bắt buộc lấy cột closing `31/12`, không lấy
+opening/interim cùng năm. Có 288 câu, cân bằng 24 câu cho mỗi lớp công thức.
+
+```powershell
+python scripts/12_gen_formula_eval.py --per-class 24
+python scripts/02_retrieve.py --questions artifacts/formula_eval/formula_questions.jsonl --out artifacts/formula_eval/formula_retrieval_operand_cached.jsonl --depth 20 --row-rerank --row-score-weight 0.10
+python scripts/03_rule_baseline.py --retrieval artifacts/formula_eval/formula_retrieval_operand_cached.jsonl --out artifacts/formula_eval/formula_codegen_operand_cached_k15.jsonl --k 15
+python scripts/05_build_submission.py --retrieval artifacts/formula_eval/formula_retrieval_operand_cached.jsonl --codegen artifacts/formula_eval/formula_codegen_operand_cached_k15.jsonl --out-dir artifacts/formula_eval/formula_submission_operand_cached_sub5 --sub-k 5 --offline-eval
+python scripts/07_evaluate.py --submission artifacts/formula_eval/formula_submission_operand_cached_sub5 --gold artifacts/formula_eval/formula_gold.json --by-class
+python scripts/13_audit_formula_eval.py --retrieval artifacts/formula_eval/formula_retrieval_operand_cached.jsonl --codegen artifacts/formula_eval/formula_codegen_operand_cached_k15.jsonl --out artifacts/formula_eval/formula_audit_operand_cached_k15.json --k 15
+```
+
+Mốc rule-only đầu tiên:
+
+| class | Exec | evidence recall@15 | all evidence@15 |
+|---|---:|---:|---:|
+| growth_pct | 1.000 | 1.000 | 1.000 |
+| gross_margin | 1.000 | 1.000 | 1.000 |
+| average_margin_change | 1.000 | 1.000 | 1.000 |
+| margin_change | 0.917 | 1.000 | 1.000 |
+| debt_equity | 0.875 | 1.000 | 1.000 |
+| margin_difference | 0.833 | 1.000 | 1.000 |
+| ranking_ratio | 0.833 | 0.951 | 0.792 |
+| count_years | 0.667 | 0.694 | 0.583 |
+| count_threshold | 0.125 | 0.427 | 0.000 |
+| temporal_count | 0.125 | 0.670 | 0.083 |
+| count_multi_condition | 0.000 | 0.356 | 0.000 |
+| nested_ranking | 0.000 | 0.604 | 0.000 |
+| **tổng** | **0.6146** | | |
+
+Mốc hiện tại sau operand requirements, exact row identity, greedy set-cover và
+formula fallback guard:
+
+| class | Exec |
+|---|---:|
+| average_margin_change | 1.000 |
+| count_multi_condition | 0.125 |
+| count_threshold | 0.917 |
+| count_years | 1.000 |
+| debt_equity | 0.875 |
+| gross_margin | 1.000 |
+| growth_pct | 0.958 |
+| margin_change | 0.917 |
+| margin_difference | 0.833 |
+| nested_ranking | 0.292 |
+| ranking_ratio | 1.000 |
+| temporal_count | 0.333 |
+| **tổng** | **0.7708** |
+
+TABLES_F2 offline ở `sub-k=5` là `0.7732` (precision `0.6249`, recall
+`0.9099`). So với mốc đầu, Execution tăng `+0.1562`. Đây vẫn là synthetic
+benchmark; leaderboard chính thức vẫn `0.2866` cho đến khi chạy payload dưới đây.
+
+`formula_audit_k15.json` tách riêng retrieval coverage, solver coverage,
+answer accuracy khi solver đã trả lời và ba lý do từ chối phổ biến theo lớp.
+Kết quả này chỉ là synthetic benchmark, tuyệt đối không upload file
+`OFFLINE_EVAL_DO_NOT_UPLOAD.zip` lên leaderboard.
+
 ---
 
 ## 4. Kaggle — payload
@@ -190,6 +254,20 @@ python scripts/04_make_kaggle_payload.py --dry-run        # kiểm tra trước,
 ```
 
 Ra `artifacts\kaggle_payload\` (~100 MB) + `payload-manifest.json`.
+
+Payload formula-aware hiện tại:
+
+```powershell
+python scripts/02_retrieve.py --out artifacts/retrieval_canonical_v2_formula_operand_exact_w010.jsonl --depth 20 --row-rerank --row-score-weight 0.10
+python scripts/03_rule_baseline.py --retrieval artifacts/retrieval_canonical_v2_formula_operand_exact_w010.jsonl --out artifacts/codegen_rule_canonical_v2_formula_operand_exact_w010_k15.jsonl --k 15
+python scripts/04_make_kaggle_payload.py --store-dir artifacts/store --retrieval artifacts/retrieval_canonical_v2_formula_operand_exact_w010.jsonl --out artifacts/kaggle-payload-formula-operand-exact-w010 --dataset-slug kaggle-payload-formula-operand-exact-w010 --dataset-id kien2005/kaggle-payload-formula-operand-exact-w010
+```
+
+Upload folder/ZIP `artifacts/kaggle-payload-formula-operand-exact-w010`, attach
+dataset đó rồi import notebook
+`r2ai-qwen2-5-coder-7b-formula-operand-exact-w010.ipynb`. Full run dùng
+`--llm-mode select --llm-target all --k 15`; tải file
+`codegen_formula_operand_sel7b_k15.jsonl` sau khi cell kiểm tra cuối cùng pass.
 
 ### 4.3 Up lên acc #1
 
@@ -422,3 +500,259 @@ Chỉ leaderboard mới là trọng tài về độ lớn.
 *"Trong nhóm HPG, HSG, MSR và NKG, doanh nghiệp có mức tăng lớn nhất từ 2023
 sang 2024 của tỷ lệ X"* = rank(growth(ratio)). Rule engine hiện chỉ giải một
 tầng. Bộ eval của tôi chỉ có ranking một tầng nên không lộ ra điều này.
+
+## 10. Candidate schema-linking v3 w010 (2026-08-21)
+
+Checkpoint chính thức vẫn là execution `0.2866`. Candidate này đã pass offline
+nhưng chưa có kết quả leaderboard.
+
+1. Upload file sau thành Kaggle Dataset, slug phải là
+   `kaggle-payload-schema-linking-v3-w010`:
+
+```text
+artifacts/kaggle-payload-schema-linking-v3-w010.zip
+```
+
+2. Import và chạy notebook:
+
+```text
+r2ai-qwen2-5-coder-7b-schema-linking-v3-w010.ipynb
+```
+
+Notebook dùng input path:
+
+```text
+/kaggle/input/datasets/kien2005/kaggle-payload-schema-linking-v3-w010
+```
+
+Giữ GPU `T4 x2`, Internet On, và chạy toàn bộ cells. Cấu hình A/B được giữ
+nguyên so với consensus trước: Qwen 2.5 Coder 7B, selection mode, empty-only,
+`n=3`, consensus 2/3, `k=15`, temperature `0.35`, seed `13`.
+
+3. Tải output sau về và đặt trong một folder kết quả mới:
+
+```text
+/kaggle/working/codegen_schema_linking_v3_consensus_empty_sel7b_k15_n3.jsonl
+```
+
+Output đã nhận tại
+`kaggle/results-10/codegen_schema_linking_v3_consensus_empty_sel7b_k15_n3.jsonl`.
+Không nộp file raw: nó làm 177 câu đang chạy được chuyển thành `failed`.
+
+Hai override `safe2` cũ của `24` và `996` vẫn bị cấm vì chúng dùng sai
+row cha. Schema-linking v3 đã sinh lại hai câu này bằng row con chính
+xác; bản audited mới chỉ nhận `24,440,562,574,996` sau khi truy ngược
+từng ô dữ liệu.
+
+File cần nộp leaderboard:
+
+```text
+artifacts/submission_result10_schema_linking_v3_audited5_w010/submission.zip
+```
+
+SHA-256: `d229bf51a5d3e368ea0a33defbd7bdad9b6b15739e310833aacdbca0bcd47eea`.
+Leaderboard của file này trả về `EXECUTION_ACCURACY=0.2866`, không tăng.
+Với 506 câu được chấm, chỉ một câu đúng mới đã phải đẩy điểm
+lên khoảng `0.2885`; do đó audited5 không tạo gain quan sát được. Không
+nộp lại artifact này. Checkpoint chính thức tiếp tục là `0.2866`:
+
+```text
+artifacts/submission_formula_operand_retrieval_best2866_answers_w010/submission.zip
+```
+
+## 11. Checkpoint kết hợp chính thức 0.3004
+
+Artifact từ nhánh `tranhuy` đã được leaderboard xác nhận:
+
+```text
+artifacts/tranhuy_02964_stockflow_exact_v11_oldretr_k5/submission.zip
+```
+
+Gói này đạt `EXECUTION_ACCURACY=0.2964`, cao hơn checkpoint cũ `0.2866`
+đúng năm câu trên 506 câu được chấm. Tên thí nghiệm bên nguồn vẫn chứa
+`02925`; dùng SHA-256 sau để nhận diện đúng file đã chấm:
+
+```text
+6773532be7dbe038310b9a0663090ebf17878111a8b27b53403cd24de5f23e9a
+```
+
+Không cần rerun Qwen. Bản kết hợp đã lấy nguyên answer, pandas query và
+evidence của gói `0.2964`, rồi rebuild với formula-operand retrieval `w=0.10`:
+
+```text
+artifacts/submission_tranhuy_02964_answers_formula_operand_retrieval_w010/submission.zip
+```
+
+SHA-256:
+
+```text
+17750e0290d181ce13d35ef87b589ee6bdf9bcf9fa4831a6c749e8744e8e93b7
+```
+
+Offline validation: đủ 1.012 ID; answer/query/evidence giống gói `0.2964` ở
+toàn bộ 1.012 câu; mọi query compile và replay khớp answer; ZIP gồm 1.553 CSV
+và pass `unzip -t`. Leaderboard xác nhận kết quả kết hợp:
+
+```text
+TABLES_F2MACRO      0.4901
+DOCS_F2MACRO        0.9079
+EXECUTION_ACCURACY  0.2964
+```
+
+So với gói Trần Huy dùng old retrieval, TABLES_F2 tăng `0.0138`, DOCS_F2 tăng
+`0.0149` và execution được giữ nguyên. So với checkpoint retrieval tốt nhất
+trước đó, TABLES_F2 tăng thêm `0.0009`, DOCS_F2 tăng thêm `0.0011`, đồng thời
+execution tăng năm câu đúng. Đây là checkpoint chính thức cần dùng làm nền
+cho mọi thử nghiệm tiếp theo.
+
+Batch canonical-v2 restore4, không cần rerun Qwen:
+
+```text
+artifacts/submission_tranhuy_02964_plus_canonical_restore4_w010/submission.zip
+```
+
+SHA-256:
+
+```text
+cdeed91318c8d6eee2cc009ca4b42e5f67acf547c5072361dfb5cbae3107a7e4
+```
+
+Bản này phục hồi theo batch bốn canonical-v2 answer `589,591,635,838` mà
+codegen Trần Huy đã chuyển từ `ok` về `failed`. So với checkpoint chính thức,
+nó chỉ đổi bốn answer/query/evidence, không đổi relevant docs và chỉ đổi
+relevant tables ở ID `838`. Toàn bộ 1.012 query replay thành công và ZIP pass
+kiểm tra cấu trúc. Leaderboard xác nhận kết quả mới:
+
+```text
+TABLES_F2MACRO      0.4902
+DOCS_F2MACRO        0.9079
+EXECUTION_ACCURACY  0.3004
+```
+
+Batch bốn câu mang lại hai câu đúng ròng trên tập 506 câu chấm, tương đương
+`+0.0040` execution. TABLES_F2 tăng nhẹ `0.0001`, DOCS_F2 giữ nguyên. Đây là
+checkpoint chính thức dùng làm nền cho mọi thử nghiệm tiếp theo.
+
+## 12. Checkpoint deterministic year-ranking exact10: 0.3083
+
+Không cần rerun Qwen cho batch này. Solver deterministic đã xử lý các câu hỏi
+trả về năm bằng phép `argmax/argmin` trên cùng một metric qua toàn bộ các năm.
+Nó chỉ fill những câu đang `failed` trong checkpoint `0.3004`.
+
+File duy nhất cần nộp leaderboard:
+
+```text
+artifacts/submission_tranhuy_03004_plus_yearrank_exact10_w010/submission.zip
+```
+
+SHA-256:
+
+```text
+e4aa4fd2eb797e3274d4e5b9869b52c8bae09a7e4769e1f39393d21ad4898203
+```
+
+Allowlist gồm 10 ID:
+
+```text
+842,850,878,884,889,904,948,960,997,1000
+```
+
+Các guard trước khi build đều đã pass: đủ 1.012 ID, chỉ 10 answer/query thay
+đổi so với checkpoint `0.3004`, mọi query compile và replay đúng answer trên
+CSV đóng gói, `relevant_tables` dùng line number 1-based chính thức và ZIP pass
+`unzip -t`. Không nộp artifact rule thô; chỉ nộp `submission.zip` ở trên.
+
+Leaderboard xác nhận `ANSWER_ACCURACY=EXECUTION_ACCURACY=0.3083`, tăng bốn câu
+đúng ròng trên 506 câu so với `0.3004`. `TABLES_F2MACRO=0.4902` và
+`DOCS_F2MACRO=0.9079` giữ nguyên, nên gain đến hoàn toàn từ logic answer. Đây
+là checkpoint chính thức mới và là base cho canonical note dictionary của 23
+câu year-ranking còn lại.
+
+## 13. Checkpoint canonical note v3 + year-ranking v2 exact13: 0.3202
+
+Batch này không cần rerun Qwen. Canonical note dictionary v3 và direct
+year-ranking resolver v2 đã xử lý 13/16 câu đơn giản còn lại bằng query
+deterministic, rồi merge fill-only trên checkpoint `0.3083`.
+
+File duy nhất cần nộp leaderboard:
+
+```text
+artifacts/submission_tranhuy_03083_plus_note_v3_yearrank_v2_exact13_w010/submission.zip
+```
+
+SHA-256:
+
+```text
+a27e20365e3f4fa3a081014fe69e64eeb6b78dd4047863f119da64d3596f4a05
+```
+
+Allowlist gồm 13 ID:
+
+```text
+813,829,852,890,897,921,936,946,959,971,978,981,1008
+```
+
+Ba ID `907,910,986` vẫn fail closed vì thiếu ô dữ liệu năm hiện tại hoặc ô là
+dấu `-`; không được thêm thủ công giá trị của năm trước. Submission mới chỉ
+đổi đúng 13 ID trên, không ghi đè câu `ok` nào của checkpoint `0.3083`. Tất cả
+1.012 query đã replay đúng answer, 229 test pass, line number bảng dùng chuẩn
+1-based và ZIP pass `unzip -t`.
+
+Leaderboard xác nhận:
+
+```text
+TABLES_F2MACRO      0.4913
+DOCS_F2MACRO        0.9103
+ANSWER_ACCURACY     0.3202
+EXECUTION_ACCURACY  0.3202
+```
+
+So với `0.3083`, batch tăng sáu câu đúng trên tập chấm 506 câu, đồng thời tăng
+table F2 `+0.0011` và docs F2 `+0.0024`. Đây là checkpoint chính thức mới và
+là base bắt buộc cho mọi merge fill-only tiếp theo.
+
+## 14. Checkpoint typed compositional ranking v3 exact12: 0.3300
+
+Batch này không cần rerun Qwen. Typed planner tách rõ phép chọn theo công
+thức/chỉ tiêu A và phép trả về công thức/chỉ tiêu B, sau đó solver deterministic
+thực hiện `select-then-project` với exact metric, exact period và tie guard.
+
+File cần nộp leaderboard:
+
+```text
+artifacts/submission_tranhuy_03202_plus_compositional_ranking_v3_exact12_w010/submission.zip
+```
+
+SHA-256:
+
+```text
+4c674ca7e75db0e1b279ff2ea997799b7e7c1cdd96a0945fdcca6f308b92406d
+```
+
+Allowlist gồm 12 ID:
+
+```text
+415,440,459,475,479,491,505,507,543,556,558,575
+```
+
+Bốn ID `495,497,511,524` vẫn fail closed do thiếu exact row cho metric note,
+EPS hoặc thuế; không nới fuzzy matching. Nhóm inventory-days dùng operand có
+kiểu kỳ `inventory(t-1)`, `inventory(t)`, `COGS(t)` và đọc đầy đủ evidence của
+mọi doanh nghiệp trước khi chọn công ty thắng. Column resolver cũng nhận năm bị
+OCR tách thành hàng header riêng hoặc ngày bị ép thành số như `3092024`.
+
+Submission chỉ đổi đúng 12 entry so với checkpoint chính thức `0.3202`, không
+ghi đè câu `ok`. Tất cả 1.012 query compile và replay đúng answer, 240 test
+pass, `relevant_tables` dùng line number 1-based và ZIP pass `unzip -t`.
+Leaderboard xác nhận:
+
+```text
+TABLES_F2MACRO      0.4958
+DOCS_F2MACRO        0.9139
+ANSWER_ACCURACY     0.3300
+EXECUTION_ACCURACY  0.3300
+```
+
+So với `0.3202`, batch tăng năm câu đúng ròng trên tập chấm 506 câu, table F2
+tăng `0.0045` và docs F2 tăng `0.0036`. Đây là checkpoint chính thức mới và
+là base bắt buộc cho median-filter planner v4.

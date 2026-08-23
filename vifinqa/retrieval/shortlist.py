@@ -12,18 +12,22 @@ plus small bonuses for a matching VAS code and for the qualifier
 """
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, asdict
+from functools import lru_cache
 
 from ..finance.metrics import (
+    METRICS,
     code_expectation,
     expand_metric_variants,
     extract_metric_qualifiers,
+    get_metric,
     metric_keys,
     metric_schema_score,
 )
 from ..router.metric_phrase import has_qualifier
-from ..utils.viet_text import label_metric_score, norm
+from ..utils.viet_text import label_metric_score, norm, tokens
 from .serialize import df_roundtrip
 
 _QUALIFIERS = ("ngan han", "dai han", "hop nhat", "rieng")
@@ -49,6 +53,60 @@ class Candidate:
         return asdict(self)
 
 
+def candidate_matches_metric(candidate: Candidate, metric_key: str) -> bool:
+    """Require canonical label identity or an exact VAS line code."""
+    return metric_identity_matches(candidate.label, candidate.code, metric_key)
+
+
+def candidate_matches_requirement(candidate: Candidate, requirement: dict) -> bool:
+    """Canonical identity plus any counterparty/detail terms in the requirement."""
+    metric_key = str(requirement.get("metric_key") or "")
+    if metric_key and not candidate_matches_metric(candidate, metric_key):
+        return False
+    variants = list(requirement.get("metric_variants") or [])
+    keys = [metric_key] if metric_key else metric_keys(variants, expand_derived=False)
+    terms = _specific_terms(variants, keys)
+    return not terms or _specific_term_coverage(candidate.label, terms) >= 0.8
+
+
+def requirement_specificity_key(requirement: dict) -> tuple[str, ...]:
+    """Small cache fingerprint; generic wording must not destroy cache reuse."""
+    metric_key = str(requirement.get("metric_key") or "")
+    variants = list(requirement.get("metric_variants") or [])
+    keys = [metric_key] if metric_key else metric_keys(variants, expand_derived=False)
+    return _specific_terms(variants, keys)
+
+
+def requirement_linking_variants(requirement: dict) -> list[str]:
+    """Use source wording only when it identifies a named detail row."""
+    variants = list(requirement.get("metric_variants") or [])
+    if requirement_specificity_key(requirement):
+        return variants
+    metric_key = str(requirement.get("metric_key") or "")
+    try:
+        return list(get_metric(metric_key).row_variants)
+    except KeyError:
+        return variants
+
+
+def metric_identity_matches(label: str, code: str, metric_key: str) -> bool:
+    """Canonical identity check usable before a Candidate is materialized."""
+    if metric_key in metric_keys([label], expand_derived=False):
+        return True
+    try:
+        metric = get_metric(metric_key)
+    except KeyError:
+        return False
+    label_norm = norm(label)
+    if any(
+        label_norm == variant or label_norm.startswith(f"{variant} ")
+        for variant in metric.row_variants
+    ):
+        return True
+    code = re.sub(r"\.0$", "", str(code or "").strip())
+    return bool(code and code in metric.codes)
+
+
 def build_shortlist(tables: list[dict], metric_variants: list[str],
                     years: list[int] | None = None, top_n: int = 8,
                     encoder=None, min_score: float = 35.0,
@@ -60,6 +118,7 @@ def build_shortlist(tables: list[dict], metric_variants: list[str],
     """
     original_variants = [m for m in metric_variants if m]
     asked_keys = metric_keys(original_variants, expand_derived=False)
+    specific_terms = _specific_terms(original_variants, asked_keys)
     requested = extract_metric_qualifiers(
         " ".join((*original_variants, question)), asked_keys)
     metric_variants = expand_metric_variants(original_variants, question=question)
@@ -71,25 +130,25 @@ def build_shortlist(tables: list[dict], metric_variants: list[str],
     if encoder is not None:
         all_labels = []
         for t in tables:
-            df = df_roundtrip(t["csv_text"])
-            all_labels.extend(str(l) for l in df["label"].unique()
-                              if isinstance(l, str) and len(l) > 3)
+            all_labels.extend(
+                label for label, _ in _cached_label_groups(t["csv_text"])
+                if len(label) > 3
+            )
         if all_labels:
             sem_lookup = encoder.similarity(metric_variants, sorted(set(all_labels)))
 
     out: list[Candidate] = []
     for t in tables:
-        df = df_roundtrip(t["csv_text"])
-        if not len(df):
-            continue
-        for label in df["label"].unique():
-            if not isinstance(label, str) or len(label) <= 3:
+        year_hints = _cached_column_year_hints(t["csv_text"])
+        for label, sub in _cached_label_groups(t["csv_text"]):
+            if len(label) <= 3:
                 continue
             lex = max(label_metric_score(label, m) for m in metric_variants)
             sem = float(sem_lookup.get(label, 0.0)) * 100.0
             score = max(lex, sem) + 0.25 * min(lex, sem)
             score += _qualifier_bonus(label, want_qual)
             score += metric_schema_score(original_variants, label, question)
+            score += _specificity_adjustment(label, specific_terms)
             if score < min_score:
                 continue
             # Prefer the TIGHTEST label covering the metric: extra qualifier
@@ -97,9 +156,9 @@ def build_shortlist(tables: list[dict], metric_variants: list[str],
             # phối"), yet token-coverage alone scores both 100.
             score -= _extra_token_penalty(label, metric_variants)
 
-            sub = df[df["label"] == label]
             pick = _pick_column(
-                sub, years, t.get("report_year"), requested.period)
+                sub, years, t.get("report_year"), requested.period,
+                year_hints=year_hints)
             if pick is None:
                 continue
             row_i, col, col_name, value, unit_scale, code = pick
@@ -126,6 +185,62 @@ def build_shortlist(tables: list[dict], metric_variants: list[str],
     return _dedupe(out)[:top_n]
 
 
+@lru_cache(maxsize=512)
+def _cached_df_roundtrip(csv_text: str):
+    """Avoid reparsing the same table once per formula operand."""
+    return df_roundtrip(csv_text)
+
+
+@lru_cache(maxsize=512)
+def _cached_column_year_hints(csv_text: str) -> dict[int, int]:
+    """Recover years OCR placed in a separate header row for each column."""
+    df = _cached_df_roundtrip(csv_text)
+    if not len(df) or not {"row", "col", "value"} <= set(df.columns):
+        return {}
+    header = df[df["row"] <= 2]
+    out: dict[int, int] = {}
+    for _row, group in header.groupby("row", sort=False):
+        pairs = []
+        for item in group.itertuples():
+            year = _numeric_header_year(float(item.value))
+            if year is not None:
+                pairs.append((int(item.col), year))
+        # Two adjacent fiscal years on one early row are strong header evidence;
+        # a lone year-like line-item value is not.
+        if len(pairs) >= 2 and len({year for _col, year in pairs}) >= 2:
+            out.update(pairs)
+    return out
+
+
+def _numeric_header_year(value: float) -> int | None:
+    """Read either YYYY or OCR-flattened D/M/YYYY header dates."""
+    if not math.isfinite(value):
+        return None
+    integer = int(value)
+    if value != integer or integer < 0:
+        return None
+    if 1900 <= integer <= 2100:
+        return integer
+    digits = str(integer)
+    if len(digits) not in {7, 8}:
+        return None
+    year = int(digits[-4:])
+    return year if 1900 <= year <= 2100 else None
+
+
+@lru_cache(maxsize=512)
+def _cached_label_groups(csv_text: str):
+    """Avoid rebuilding a boolean DataFrame slice once per row label."""
+    df = _cached_df_roundtrip(csv_text)
+    if not len(df):
+        return ()
+    return tuple(
+        (str(label), group)
+        for label, group in df.groupby("label", sort=False, dropna=True)
+        if isinstance(label, str)
+    )
+
+
 def _dedupe(cands: list[Candidate]) -> list[Candidate]:
     seen, out = set(), []
     for c in cands:
@@ -143,6 +258,73 @@ def _extra_token_penalty(label: str, metric_variants: list[str],
     lt = set(tokens(label))
     best = min((len(lt - set(tokens(m))) for m in metric_variants), default=0)
     return min(cap, per_token * max(0, best - 1))
+
+
+_SPECIFIC_STOPWORDS = {
+    "bao", "cac", "cao", "cho", "chinh", "con", "cong", "co", "cua", "cuoi",
+    "dau", "den", "doi", "gia", "han", "ky", "la", "lai", "lon", "me",
+    "nam", "nhat", "nhieu", "phan", "so", "tai", "thap", "theo", "tong",
+    "trong", "tri", "ty", "va", "voi",
+}
+
+
+def _specific_terms(phrases: list[str], asked_keys: list[str]) -> tuple[str, ...]:
+    """Return named detail terms left after removing canonical metric language."""
+    if not asked_keys:
+        return ()
+    base_tokens = {
+        token
+        for key in asked_keys if key in METRICS
+        for variant in METRICS[key].variants
+        for token in tokens(variant)
+    }
+    best: tuple[str, ...] = ()
+    for phrase in phrases:
+        phrase_norm = norm(phrase)
+        phrase_tokens = tokens(phrase_norm)
+        if len(phrase_tokens) > 14 or not _has_named_detail_link(phrase_tokens):
+            continue
+        extra = tuple(
+            token for token in phrase_tokens
+            if token not in base_tokens
+            and token not in _SPECIFIC_STOPWORDS
+            and not token.isdigit()
+        )
+        if sum(len(token) for token in extra) >= 3 and len(extra) > len(best):
+            best = extra
+    return best
+
+
+def _has_named_detail_link(phrase_tokens: list[str]) -> bool:
+    if "ben lien quan" in " ".join(phrase_tokens):
+        return False
+    for index, token in enumerate(phrase_tokens):
+        previous = phrase_tokens[index - 1] if index else ""
+        if token == "voi" and previous not in {"so", "doi"}:
+            return True
+    return False
+
+
+def _specific_term_coverage(label: str, terms: tuple[str, ...]) -> float:
+    if not terms:
+        return 1.0
+    label_norm = norm(label)
+    compact = "".join(terms)
+    if len(compact) >= 3 and compact in label_norm.replace(" ", ""):
+        return 1.0
+    have = set(tokens(label_norm))
+    return sum(term in have for term in terms) / len(terms)
+
+
+def _specificity_adjustment(label: str, terms: tuple[str, ...]) -> float:
+    if not terms:
+        return 0.0
+    coverage = _specific_term_coverage(label, terms)
+    if coverage >= 0.8:
+        return 36.0
+    if coverage >= 0.5:
+        return 10.0
+    return -28.0
 
 
 def _year_status(col_name: str, years: list[int] | None) -> str:
@@ -193,6 +375,8 @@ def _qualifier_bonus(label: str, want: set[str]) -> float:
 
 _CURRENT_PERIOD_HEADERS = (
     "nam nay", "ky nay", "so cuoi nam", "cuoi nam", "cuoi ky",
+    "tai ngay 31 thang 12 nam", "gia goc/so co kha nang tra no",
+    "don vi tinh",
     "tai ngay ket thuc", "nam ket thuc ngay", "nam tai chinh ket thuc ngay",
     "tong cong", "current year", "current period", "ending balance", "total",
 )
@@ -211,6 +395,10 @@ def _period_kind(col_name: str) -> str:
     cn = norm(str(col_name or ""))
     if not cn or cn == "nan":
         return "metadata"
+    if re.search(r"(?<!\d)(?:0?1)\s*/\s*(?:0?1)\s*/\s*20\d{2}(?!\d)", cn):
+        return "prior"
+    if re.search(r"(?<!\d)31\s*/\s*12\s*/\s*20\d{2}(?!\d)", cn):
+        return "current"
     if any(marker in cn for marker in _PRIOR_PERIOD_HEADERS):
         return "prior"
     if any(marker in cn for marker in _CURRENT_PERIOD_HEADERS):
@@ -244,6 +432,16 @@ def _column_score(col_name: str, years: list[int] | None,
         elif kind == "prior":
             period_adjust = -45
 
+    # A 1/1/Y balance is the closing balance of Y-1. Handle that accounting
+    # convention before the generic "different literal year" rejection.
+    if (kind == "prior" and report_year is not None
+            and int(report_year) - 1 in requested
+            and re.search(
+                rf"(?<!\d)(?:0?1)\s*/\s*(?:0?1)\s*/\s*{int(report_year)}(?!\d)",
+                cn,
+            )):
+        return 100 + period_adjust
+
     # A literal requested year beats every inferred current/prior convention.
     for y in requested:
         if re.search(rf"31\s*/\s*12\s*/\s*{y}", cn):
@@ -270,11 +468,16 @@ def _column_score(col_name: str, years: list[int] | None,
 
 def _pick_column(sub, years: list[int] | None,
                  report_year: int | None = None,
-                 requested_period: str = ""):
+                 requested_period: str = "",
+                 year_hints: dict[int, int] | None = None):
     """Choose the requested financial period, excluding code/note columns."""
     best = None
     for r in sub.itertuples():
         cn = str(r.col_name)
+        hinted_year = (year_hints or {}).get(int(r.col))
+        if hinted_year is not None and not re.search(
+                rf"(?<!\d){hinted_year}(?!\d)", cn):
+            cn = f"{cn} {hinted_year}".strip()
         cs = _column_score(cn, years, report_year, requested_period)
         # For equally informative headers, retain the original left-to-right
         # convention among actual value columns.

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, asdict
 from ..extraction.build_store import Store
 from .entities import StockMap, parse_question, Parsed
 from .decompose import build_plan, evidence_budget
+from .evidence import build_evidence_requirements
 
 
 @dataclass
@@ -25,6 +26,7 @@ class Route:
     metric_keys: list[str] = field(default_factory=list)
     metric_qualifiers: dict[str, str] = field(default_factory=dict)
     plan: dict = field(default_factory=dict)     # decompose.Plan.to_dict()
+    evidence_requirements: list[dict] = field(default_factory=list)
     evidence_budget: int = 0                     # dynamic k for this question
     report_ids: list[str] = field(default_factory=list)
     confidence: str = "high"           # high | medium | low
@@ -93,9 +95,40 @@ def route_question(qid: int, question: str, stock: StockMap, store: Store) -> Ro
         r.notes.append("no report locked")
 
     # --- decomposition + dynamic evidence budget (P1.1 / P1.4) -------------
-    plan = build_plan(r.question, r.tickers, r.years, r.doc_type, r.metric_norm)
+    plan = build_plan(
+        r.question, r.tickers, r.years, r.doc_type, r.metric_norm,
+        output_type=r.output_type,
+    )
     r.plan = plan.to_dict()
     r.evidence_budget = evidence_budget(plan)
+    r.evidence_requirements = [
+        requirement.to_dict()
+        for requirement in build_evidence_requirements(
+            r.question,
+            r.tickers,
+            r.years,
+            r.doc_type,
+            metric_variants=r.metric_variants,
+            plan=r.plan,
+        )
+    ]
+    # Some typed formulas require an adjacent fiscal period even when that year
+    # is not written explicitly (for example average opening/closing inventory).
+    # Lock those reports from the canonical evidence contract before retrieval.
+    for requirement in r.evidence_requirements:
+        ticker = str(requirement.get("ticker") or "")
+        year = requirement.get("year")
+        if not ticker or year is None:
+            continue
+        for report_id in store.find_reports(ticker, int(year), r.doc_type):
+            if report_id not in r.report_ids:
+                r.report_ids.append(report_id)
+                r.notes.append(f"formula operand report {ticker}/{year}")
+    if r.evidence_requirements:
+        r.evidence_budget = max(
+            r.evidence_budget,
+            min(20, len(r.evidence_requirements)),
+        )
     if plan.is_composite:
         r.notes.append(f"composite op={plan.op} facts={len(plan.facts)} "
                        f"budget={r.evidence_budget}")

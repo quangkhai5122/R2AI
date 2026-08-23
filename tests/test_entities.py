@@ -255,3 +255,13 @@ def test_count_metric_keeps_share_count_line_item(stock_map):
     )
     assert parsed.output_type == "count"
     assert "so luong co phieu dang luu hanh" in parsed.metric_variants
+
+
+def test_full_separate_financial_statement_phrase_selects_company_only(stock_map):
+    parsed = parse_question(
+        "Tiền trả trước cho người bán trên báo cáo tài chính riêng của VNM "
+        "năm 2024 là bao nhiêu?",
+        stock_map,
+    )
+
+    assert parsed.doc_type == "separate"

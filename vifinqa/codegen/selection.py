@@ -27,6 +27,8 @@ import re
 from dataclasses import dataclass
 
 from ..finance.metrics import metric_keys, metric_uses_absolute_value
+from ..retrieval.shortlist import candidate_matches_requirement
+from ..utils.viet_text import strip_diacritics
 from .units import check_answer_unit, percent_from_cell, cell_is_already_percent
 
 # ops the synthesiser can execute from selected cells
@@ -89,6 +91,117 @@ def parse_selection(text: str) -> Selection | None:
                 return Selection(op=op, operands=ops,
                                  note=str(obj.get("note", ""))[:120])
     return None
+
+
+def requirement_coverage(sel: Selection, candidates, requirements: list[dict]) -> dict:
+    """Measure whether the selected cells prove every routed formula operand."""
+    required = {
+        str(req.get("requirement_id") or ""): req
+        for req in requirements
+        if req.get("requirement_id")
+    }
+    if not required:
+        return {"required": 0, "covered": 0, "complete": True, "missing": []}
+    picks = [candidates[i - 1] for i in sel.operands
+             if 1 <= i <= len(candidates)]
+    covered = set()
+    for requirement_id, requirement in required.items():
+        if any(_candidate_proves_requirement(candidate, requirement)
+               for candidate in picks):
+            covered.add(requirement_id)
+    missing = sorted(set(required) - covered)
+    return {
+        "required": len(required), "covered": len(covered),
+        "complete": not missing, "missing": missing,
+    }
+
+
+def selection_matches_route(sel: Selection, route: dict,
+                            requirements: list[dict]) -> bool:
+    """Whether one selection expression can represent the routed calculation."""
+    plan_op = str((route.get("plan") or {}).get("op") or "lookup")
+    output_type = str(route.get("output_type") or "number")
+    question = _plain(route.get("question", ""))
+    unique_operands = len(set(sel.operands))
+    required = {
+        str(req.get("requirement_id") or ""): req
+        for req in requirements if req.get("requirement_id")
+    }
+    n_required = len(required)
+
+    if plan_op == "ranking":
+        if _looks_nested_selector(question):
+            return False
+        metrics = {str(req.get("metric_key") or "") for req in required.values()}
+        return (
+            sel.op in {"ranking_max", "ranking_min"}
+            and (not n_required or len(metrics) == 1)
+            and (not n_required or unique_operands == n_required)
+        )
+    if plan_op == "average":
+        return sel.op == "average" and (not n_required or unique_operands == n_required)
+    if plan_op == "growth_pct":
+        return sel.op == "growth_pct" and unique_operands == 2
+    if plan_op == "difference":
+        if output_type == "count":
+            return False
+        return sel.op in {"difference", "percentage_point"} and unique_operands == 2
+    if plan_op in {"ratio", "margin", "ratio_times"}:
+        return sel.op in {"ratio", "margin", "ratio_times"} and unique_operands == 2
+    if plan_op == "count" or output_type == "count":
+        # Selection's count expression only proves that picked cells exist; it
+        # cannot replay thresholds or prove why non-picked entities failed.
+        return False
+    if plan_op == "lookup":
+        if n_required == 1:
+            return sel.op == "lookup" and unique_operands == 1
+        if n_required == 2 and output_type in {"percent", "ratio"}:
+            return sel.op in {"ratio", "margin", "ratio_times"} and unique_operands == 2
+        return not n_required and sel.op == "lookup" and unique_operands == 1
+    return False
+
+
+def _looks_nested_selector(text: str) -> bool:
+    return bool(
+        re.search(r"\b(?:cua|cho|tai)\s+(?:cong ty|doanh nghiep|ma|to chuc)\s+co(?!\s+phan\b)\b",
+                  text)
+        or re.search(r"\b(?:cong ty|doanh nghiep|ma|to chuc)\s+co(?!\s+phan\b)\b", text)
+        or re.search(r"\bnam\s+(?:ma|ghi nhan)\b", text)
+        or re.search(r"\b(?:tai|vao)\s+nam\s+co\b", text)
+    )
+
+
+def _plain(text: str) -> str:
+    return re.sub(r"\s+", " ", strip_diacritics(str(text or "")).lower()
+                  .replace("đ", "d")).strip()
+
+
+def _candidate_proves_requirement(candidate, requirement: dict) -> bool:
+    ticker = str(requirement.get("ticker") or "").upper()
+    report_id = str(getattr(candidate, "report_id", ""))
+    parts = report_id.split("_")
+    if ticker and (not parts or parts[0].upper() != ticker):
+        return False
+
+    doc_type = str(requirement.get("doc_type") or "")
+    if doc_type and report_id.endswith(("_consolidated", "_separate")):
+        if not report_id.endswith(f"_{doc_type}"):
+            return False
+
+    if not candidate_matches_requirement(candidate, requirement):
+        return False
+
+    year = requirement.get("year")
+    if year is None:
+        return True
+    year = int(year)
+    named_years = {int(value) for value in re.findall(r"(?<!\d)(20\d{2})(?!\d)",
+                                                       str(candidate.col_name))}
+    if named_years:
+        return year in named_years
+    report_year = next((int(part) for part in parts[1:] if re.fullmatch(r"20\d{2}", part)),
+                       None)
+    return report_year in {year, year + 1}
 
 
 def synthesize(sel: Selection, candidates, route: dict):

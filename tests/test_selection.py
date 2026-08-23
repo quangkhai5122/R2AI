@@ -8,7 +8,8 @@ These tests pin that the synthesiser cannot reproduce any of those mistakes.
 import unittest
 
 from vifinqa.codegen.selection import (Selection, parse_selection, synthesize,
-                                       confidence)
+                                       confidence, requirement_coverage,
+                                       selection_matches_route)
 
 
 class _C:
@@ -16,11 +17,11 @@ class _C:
 
     def __init__(self, var="df1", label="Doanh thu thuần", col=1,
                  col_name="2023", value=100.0, unit_scale=1e6, score=80.0,
-                 row=1):
+                 row=1, report_id="AAA_2023_consolidated", code="10"):
         self.var, self.label, self.col, self.col_name = var, label, col, col_name
         self.value, self.unit_scale, self.score = value, unit_scale, score
         self.row = row
-        self.report_id, self.table_pos, self.code = "AAA_2023", 1, "10"
+        self.report_id, self.table_pos, self.code = report_id, 1, code
 
 
 class ParseTests(unittest.TestCase):
@@ -52,6 +53,106 @@ class ValidationTests(unittest.TestCase):
 
     def test_rejects_too_few_operands(self):
         self.assertIn("needs 2", Selection("difference", [1]).valid_for(3))
+
+
+class RequirementCoverageTests(unittest.TestCase):
+    @staticmethod
+    def _requirement(ticker, requirement_id):
+        return {
+            "requirement_id": requirement_id,
+            "ticker": ticker,
+            "year": 2023,
+            "doc_type": "consolidated",
+            "metric_key": "net_revenue",
+        }
+
+    def test_complete_only_when_every_entity_metric_year_is_selected(self):
+        candidates = [
+            _C(var="df1", report_id="AAA_2023_consolidated"),
+            _C(var="df2", report_id="BBB_2023_consolidated"),
+        ]
+        requirements = [self._requirement("AAA", "AAA|2023|net_revenue"),
+                        self._requirement("BBB", "BBB|2023|net_revenue")]
+        complete = requirement_coverage(
+            Selection("average", [1, 2]), candidates, requirements)
+        missing = requirement_coverage(
+            Selection("lookup", [1]), candidates, requirements)
+        self.assertTrue(complete["complete"])
+        self.assertEqual(complete["covered"], 2)
+        self.assertFalse(missing["complete"])
+        self.assertEqual(missing["missing"], ["BBB|2023|net_revenue"])
+
+    def test_wrong_metric_or_year_does_not_prove_requirement(self):
+        requirements = [self._requirement("AAA", "AAA|2023|net_revenue")]
+        wrong_metric = _C(label="Tổng tài sản", code="270")
+        wrong_year = _C(col_name="2022", report_id="AAA_2022_consolidated")
+        self.assertFalse(requirement_coverage(
+            Selection("lookup", [1]), [wrong_metric], requirements)["complete"])
+        self.assertFalse(requirement_coverage(
+            Selection("lookup", [1]), [wrong_year], requirements)["complete"])
+
+    def test_no_structured_requirements_keeps_legacy_selection_available(self):
+        state = requirement_coverage(Selection("lookup", [1]), [_C()], [])
+        self.assertEqual(state, {"required": 0, "covered": 0,
+                                 "complete": True, "missing": []})
+
+    def test_generic_parent_does_not_prove_named_counterparty_requirement(self):
+        requirement = {
+            "requirement_id": "HNG|2017|borrowings_long_term",
+            "ticker": "HNG", "year": 2017, "doc_type": "separate",
+            "metric_key": "borrowings_long_term",
+            "metric_variants": ["vay dai han voi hoang anh gia lai", "vay dai han"],
+        }
+        parent = _C(label="Vay dai han", code="", col_name="2017",
+                    report_id="HNG_2017_separate")
+        child = _C(
+            label="Cong ty Co phan HoangAnh Gia Lai Cong ty me Vay dai han",
+            code="", col_name="2017", report_id="HNG_2017_separate")
+
+        self.assertFalse(requirement_coverage(
+            Selection("lookup", [1]), [parent], [requirement])["complete"])
+        self.assertTrue(requirement_coverage(
+            Selection("lookup", [1]), [child], [requirement])["complete"])
+
+
+class RouteCompatibilityTests(unittest.TestCase):
+    @staticmethod
+    def _requirements(n=1, metric="net_revenue"):
+        return [{
+            "requirement_id": f"AAA|{2020 + i}|{metric}",
+            "ticker": "AAA", "year": 2020 + i,
+            "doc_type": "consolidated", "metric_key": metric,
+        } for i in range(n)]
+
+    def test_direct_lookup_requires_exactly_one_fact(self):
+        route = {"question": "Doanh thu nam 2024?", "output_type": "number",
+                 "plan": {"op": "lookup"}}
+        self.assertTrue(selection_matches_route(
+            Selection("lookup", [1]), route, self._requirements()))
+        self.assertFalse(selection_matches_route(
+            Selection("sum", [1, 2]), route, self._requirements(2)))
+
+    def test_simple_ranking_accepts_one_metric_across_periods(self):
+        route = {"question": "Doanh thu lon nhat trong cac nam la bao nhieu?",
+                 "output_type": "number", "plan": {"op": "ranking"}}
+        self.assertTrue(selection_matches_route(
+            Selection("ranking_max", [1, 2, 3]), route,
+            self._requirements(3)))
+
+    def test_nested_ranking_is_not_representable_by_one_selection_op(self):
+        route = {
+            "question": "Doanh thu tai nam co von chu so huu cao nhat la bao nhieu?",
+            "output_type": "number", "plan": {"op": "ranking"},
+        }
+        self.assertFalse(selection_matches_route(
+            Selection("ranking_max", [1, 2, 3]), route,
+            self._requirements(3)))
+
+    def test_conditional_count_is_rejected(self):
+        route = {"question": "Co bao nhieu cong ty co doanh thu duong?",
+                 "output_type": "count", "plan": {"op": "count"}}
+        self.assertFalse(selection_matches_route(
+            Selection("count", [1, 2]), route, self._requirements(3)))
 
 
 class SynthesisTests(unittest.TestCase):

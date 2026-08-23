@@ -5,23 +5,29 @@ candidate tables.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from pathlib import Path
 
 from ..config import RETRIEVE_DEPTH
 from ..extraction.build_store import Store
-from ..finance.metrics import expand_metric_variants
+from ..finance.metrics import expand_metric_variants, metric_context_matches
 from ..router.entities import StockMap
 from ..router.decompose import split_ratio_metric
+from ..router.evidence import evidence_coverage
 from ..router.router import route_question
 from ..utils.io import read_jsonl, write_jsonl
 from ..utils.viet_text import fuzz_token_set, norm, tokens
 from .bm25 import BM25
 from .serialize import table_doc_tokens, grid_of, tidy_csv_text
-from .shortlist import build_shortlist
+from .shortlist import (build_shortlist, candidate_matches_requirement,
+                        requirement_linking_variants,
+                        requirement_specificity_key)
 
 _LABEL_BOOST = 1.5
 _LABEL_THRESHOLD = 88.0
 _ROW_SCORE_WEIGHT = 0.18
+_REQUIREMENT_SCORE_CACHE: OrderedDict[tuple, float | None] = OrderedDict()
+_REQUIREMENT_SCORE_CACHE_SIZE = 50000
 
 def retrieve_for_route(route, store: Store, depth: int = RETRIEVE_DEPTH,
                        row_rerank: bool = False,
@@ -44,7 +50,21 @@ def retrieve_for_route(route, store: Store, depth: int = RETRIEVE_DEPTH,
         scores = _combined_bm25_scores(
             bm25, base_variants, variants, getattr(route, "years", []) or []
         )
-        order = sorted(range(len(metas)), key=lambda i: -scores[i])[: max(depth * 3, 60)]
+        requirement_matches = _requirement_table_matches(route, metas)
+        base_order = sorted(
+            range(len(metas)), key=lambda i: -scores[i]
+        )[: max(depth * 3, 60)]
+        by_key = {
+            (m["report_id"], int(m["table_pos"])): i
+            for i, m in enumerate(metas)
+        }
+        targeted = sorted(
+            (by_key[key] for key in requirement_matches if key in by_key),
+            key=lambda i: -max(requirement_matches[
+                (metas[i]["report_id"], int(metas[i]["table_pos"]))
+            ].values()),
+        )
+        order = list(dict.fromkeys([*base_order, *targeted]))
         row_scores = _row_scores(route, metas, order, rank_variants) if row_rerank else {}
         for i in order:
             m, g = metas[i], grids[i]
@@ -64,6 +84,7 @@ def retrieve_for_route(route, store: Store, depth: int = RETRIEVE_DEPTH,
                 s *= _LABEL_BOOST
             key = (m["report_id"], int(m["table_pos"]))
             row_score = row_scores.get(key, 0.0)
+            req_scores = requirement_matches.get(key, {})
             bm25_score = float(s)
             final_score = bm25_score + row_score_weight * row_score
             cands.append({
@@ -76,6 +97,13 @@ def retrieve_for_route(route, store: Store, depth: int = RETRIEVE_DEPTH,
                 "bm25_score": round(bm25_score, 4),
                 "row_score": round(float(row_score), 1),
                 "label_match": round(best_lab, 1),
+                "requirement_hits": sorted(req_scores),
+                "requirement_scores": {
+                    req_id: round(float(req_score), 1)
+                    for req_id, req_score in sorted(req_scores.items())
+                },
+                "requirement_score": round(max(req_scores.values()), 1)
+                if req_scores else 0.0,
             })
     cands.sort(key=lambda c: -c["score"])
     return _apply_quota(cands, route, depth)
@@ -185,6 +213,90 @@ def _row_scores(route, metas: list[dict], order: list[int],
     return out
 
 
+def _requirement_table_matches(
+    route, metas: list[dict], per_requirement: int = 2,
+) -> dict[tuple[str, int], dict[str, float]]:
+    """Find exact table candidates independently for every formula operand."""
+    requirements = getattr(route, "evidence_requirements", None) or []
+    if not requirements or not metas:
+        return {}
+
+    out: dict[tuple[str, int], dict[str, float]] = {}
+    ticker = str(metas[0].get("ticker") or "").upper()
+    for requirement in requirements:
+        if str(requirement.get("ticker") or "").upper() not in {"", ticker}:
+            continue
+        req_id = str(requirement.get("requirement_id") or "")
+        variants = list(requirement.get("metric_variants") or [])
+        year = requirement.get("year")
+        if not req_id or not variants:
+            continue
+
+        scoped = [
+            i for i, meta in enumerate(metas)
+            if year is None or int(meta.get("year") or 0) in {int(year), int(year) + 1}
+        ]
+        if not scoped:
+            scoped = list(range(len(metas)))
+        scored_tables = []
+        for i in scoped:
+            meta = metas[i]
+            score = _table_requirement_score(meta, requirement)
+            if score is not None:
+                scored_tables.append((float(score), meta))
+        scored_tables.sort(key=lambda item: -item[0])
+        for score, meta in scored_tables[:per_requirement]:
+            key = (meta["report_id"], int(meta["table_pos"]))
+            out.setdefault(key, {})[req_id] = score
+    return out
+
+
+def _table_requirement_score(meta: dict, requirement: dict) -> float | None:
+    """Best exact row score for one stable (table, metric, period) key."""
+    year = requirement.get("year")
+    cache_key = (
+        meta["report_id"],
+        int(meta["table_pos"]),
+        str(requirement.get("metric_key") or ""),
+        int(year) if year is not None else None,
+        requirement_specificity_key(requirement),
+    )
+    if cache_key in _REQUIREMENT_SCORE_CACHE:
+        value = _REQUIREMENT_SCORE_CACHE.pop(cache_key)
+        _REQUIREMENT_SCORE_CACHE[cache_key] = value
+        return value
+
+    metric_key = str(requirement.get("metric_key") or "")
+    if not metric_context_matches(metric_key, str(meta.get("context") or "")):
+        _REQUIREMENT_SCORE_CACHE[cache_key] = None
+        return None
+
+    block = {
+        "var": "req",
+        "report_id": meta["report_id"],
+        "table_pos": int(meta["table_pos"]),
+        "report_year": int(meta["year"]),
+        "csv_text": tidy_csv_text(meta),
+    }
+    shortlist = build_shortlist(
+        [block],
+        requirement_linking_variants(requirement),
+        [int(year)] if year is not None else [],
+        top_n=40,
+        min_score=62.0,
+        question=str(requirement.get("metric_label") or ""),
+    )
+    exact = [
+        candidate.score for candidate in shortlist
+        if candidate_matches_requirement(candidate, requirement)
+    ]
+    value = float(max(exact)) if exact else None
+    _REQUIREMENT_SCORE_CACHE[cache_key] = value
+    if len(_REQUIREMENT_SCORE_CACHE) > _REQUIREMENT_SCORE_CACHE_SIZE:
+        _REQUIREMENT_SCORE_CACHE.popitem(last=False)
+    return value
+
+
 def _apply_quota(cands: list[dict], route, depth: int) -> list[dict]:
     """Dynamic evidence allocation (P1.4).
 
@@ -192,34 +304,116 @@ def _apply_quota(cands: list[dict], route, depth: int) -> list[dict]:
     pure score ranking can return 5 tables that all belong to A. Guarantee at
     least `per_doc` slots for every locked report, then fill by score.
     """
+    if not cands:
+        return []
     plan = getattr(route, "plan", None) or {}
     facts = plan.get("facts", [])
-    if len(facts) <= 1 or not cands:
-        return cands[:depth]
+    requirements = getattr(route, "evidence_requirements", None) or []
+    required = {
+        str(requirement.get("requirement_id") or "")
+        for requirement in requirements
+        if requirement.get("requirement_id")
+    }
+    out, selected = [], set()
+
+    # When the evidence budget can hold one table per operand, reserve the
+    # strongest exact row match independently. A compact set-cover table can be
+    # semantically wrong (for example a disposal note containing both "current
+    # assets" and "current liabilities") while the two statement tables carry
+    # the stable VAS codes requested by the formula.
+    uncovered = set(required)
+    if len(required) <= depth:
+        for req_id in sorted(required):
+            choices = [
+                candidate for candidate in cands
+                if req_id in candidate.get("requirement_hits", [])
+            ]
+            if not choices:
+                continue
+            candidate = max(
+                choices,
+                key=lambda item: (
+                    float(item.get("requirement_scores", {}).get(req_id, 0.0)),
+                    float(item.get("score", 0.0)),
+                ),
+            )
+            key = (candidate["report_id"], int(candidate["table_pos"]))
+            if key not in selected:
+                out.append(candidate)
+                selected.add(key)
+            uncovered -= set(candidate.get("requirement_hits", []))
+
+    # Greedy set cover: reserve as few tables as possible while giving every
+    # operand an exact row-level table candidate.
+    while uncovered and len(out) < depth:
+        eligible = []
+        for candidate in cands:
+            key = (candidate["report_id"], int(candidate["table_pos"]))
+            if key in selected:
+                continue
+            new_hits = uncovered & set(candidate.get("requirement_hits", []))
+            if not new_hits:
+                continue
+            req_scores = candidate.get("requirement_scores", {})
+            eligible.append((
+                len(new_hits),
+                sum(float(req_scores.get(req_id, 0.0)) for req_id in new_hits),
+                float(candidate.get("score", 0.0)),
+                candidate,
+                new_hits,
+            ))
+        if not eligible:
+            break
+        _, _, _, candidate, new_hits = max(eligible, key=lambda item: item[:3])
+        out.append(candidate)
+        selected.add((candidate["report_id"], int(candidate["table_pos"])))
+        uncovered -= new_hits
+
+    if len(facts) <= 1 and len(requirements) <= 1:
+        for candidate in cands:
+            if len(out) >= depth:
+                break
+            key = (candidate["report_id"], int(candidate["table_pos"]))
+            if key not in selected:
+                out.append(candidate)
+                selected.add(key)
+        return out[:depth]
+
     docs = list(dict.fromkeys(c["report_id"] for c in cands))
     per_doc = max(1, depth // max(1, len(docs)))
-    taken, out = {}, []
+    taken = {}
+    for candidate in out:
+        report_id = candidate["report_id"]
+        taken[report_id] = taken.get(report_id, 0) + 1
     for c in cands:
         if len(out) >= depth:
             break
-        if taken.get(c["report_id"], 0) < per_doc:
+        key = (c["report_id"], int(c["table_pos"]))
+        if key not in selected and taken.get(c["report_id"], 0) < per_doc:
             out.append(c)
+            selected.add(key)
             taken[c["report_id"]] = taken.get(c["report_id"], 0) + 1
     for c in cands:                      # fill the remainder by pure score
         if len(out) >= depth:
             break
-        if c not in out:
+        key = (c["report_id"], int(c["table_pos"]))
+        if key not in selected:
             out.append(c)
+            selected.add(key)
     return out[:depth]
 
 
 def run_retrieval(questions_path: Path, store_dir: Path, code_stock_csv: Path,
                   out_path: Path, depth: int = RETRIEVE_DEPTH, limit: int = 0,
                   row_rerank: bool = False,
-                  row_score_weight: float = _ROW_SCORE_WEIGHT) -> None:
+                  row_score_weight: float = _ROW_SCORE_WEIGHT,
+                  question_ids: set[int] | None = None,
+                  base_path: Path | None = None) -> None:
     store = Store(store_dir)
     stock = StockMap(code_stock_csv)
     questions = read_jsonl(questions_path)
+    if question_ids:
+        questions = [q for q in questions if int(q["id"]) in question_ids]
     if limit:
         questions = questions[:limit]
     out = []
@@ -234,8 +428,23 @@ def run_retrieval(questions_path: Path, store_dir: Path, code_stock_csv: Path,
             route, store, depth, row_rerank=row_rerank,
             row_score_weight=row_score_weight,
         )
-        out.append({"id": q["id"], "question": q["question"],
-                    "route": route.to_dict(), "candidates": cands})
+        route_dict = route.to_dict()
+        out.append({
+            "id": q["id"],
+            "question": q["question"],
+            "route": route_dict,
+            "candidates": cands,
+            "evidence": evidence_coverage(
+                route_dict.get("evidence_requirements", []), cands
+            ),
+        })
+    if base_path is not None:
+        base = read_jsonl(base_path)
+        replacements = {int(row["id"]): row for row in out}
+        out = [replacements.get(int(row["id"]), row) for row in base]
+        existing = {int(row["id"]) for row in base}
+        out.extend(row for row_id, row in replacements.items()
+                   if row_id not in existing)
     write_jsonl(out_path, out)
     n_empty = sum(1 for r in out if not r["candidates"])
     print(f"retrieval done: {len(out)} questions, {n_empty} with no candidates")

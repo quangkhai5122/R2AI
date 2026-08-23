@@ -56,6 +56,9 @@ class _FakeBundle:
     def prompt_messages(self):
         return [{"role": "user", "content": self.question}]
 
+    def select_messages(self, _encoder=None):
+        return self.prompt_messages()
+
     def used_vars(self, _code):
         return [self.tables[0]]
 
@@ -135,6 +138,110 @@ class CodegenCheckpointTests(unittest.TestCase):
             rows = [json.loads(line) for line in output.read_text().splitlines()]
             self.assertEqual(len(rows), 5)
             self.assertTrue(all(r["source"] == "none" for r in rows))
+
+    def test_selection_consensus_votes_reach_arbitration(self):
+        class ThreeSampleClient:
+            name = "fake"
+
+            def chat_batch(self, conversations, **_kwargs):
+                return [["a", "b", "c"] for _ in conversations]
+
+        def consensus(bundle, samples, _encoder):
+            self.assertEqual(len(samples), 3)
+            return {
+                "id": bundle.id, "question": bundle.question,
+                "answer": 1.0, "pandas_query": "float(df1)",
+                "used_vars": bundle.tables, "status": "ok",
+                "source": "llm_select", "votes": 2, "n_ok": 3,
+                "detail": "consensus=2/3", "detail_conf": 90.0,
+                "semantic": {}, "run_signature": bundle.run_signature,
+            }
+
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            retrieval, output = td / "retrieval.jsonl", td / "out.jsonl"
+            self._recs(retrieval, n=1)
+            with patch.object(generate, "_selection_result", consensus):
+                self._run(
+                    retrieval, output, ThreeSampleClient(),
+                    llm_mode="select", n_samples=3,
+                )
+            row = json.loads(output.read_text().strip())
+            self.assertEqual(row["votes"], 2)
+            self.assertEqual(row["arbitration"]["llm_conf"], 76.7)
+
+
+class SelectionConsensusTests(unittest.TestCase):
+    def _bundle(self):
+        candidates = [
+            SimpleNamespace(
+                var=f"df{i}", report_id="AAA_2024_consolidated",
+                table_pos=i - 1, row=0, label=f"Metric {i}", code="",
+                col=0, col_name="2024", value=float(i * 10),
+                unit_scale=1.0, score=92.0, lexical=92.0, semantic=0.0,
+            )
+            for i in range(1, 4)
+        ]
+
+        class Bundle:
+            id = 1
+            question = "lookup"
+            route = {"output_type": "number", "unit_scale": 1.0}
+            run_signature = "selection-consensus"
+            dfs = {}
+
+            def shortlist(self, _encoder, top_n=12):
+                return candidates[:top_n]
+
+            def used_vars(self, _query):
+                return []
+
+        return Bundle()
+
+    @staticmethod
+    def _validated(_bundle, query):
+        for i in range(1, 4):
+            if f"df{i}" in query:
+                return {"status": "ok", "value": float(i * 10),
+                        "semantic": {"ok": True}}
+        return {"status": "failed", "value": 0.0}
+
+    def test_selection_requires_absolute_majority(self):
+        samples = [
+            '{"op":"lookup","operands":[1]}',
+            '{"op":"lookup","operands":[2]}',
+            '{"op":"lookup","operands":[3]}',
+        ]
+        with patch.object(generate, "_run_validated", self._validated):
+            result = generate._selection_result(self._bundle(), samples, None)
+        self.assertIsNone(result)
+
+    def test_selection_records_two_of_three_consensus(self):
+        samples = [
+            '{"op":"lookup","operands":[1]}',
+            '{"op":"lookup","operands":[1],"note":"same pick"}',
+            '{"op":"lookup","operands":[2]}',
+        ]
+        with patch.object(generate, "_run_validated", self._validated):
+            result = generate._selection_result(self._bundle(), samples, None)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["answer"], 10.0)
+        self.assertEqual(result["votes"], 2)
+        self.assertEqual(result["n_ok"], 3)
+        self.assertIn("consensus=2/3", result["detail"])
+
+    def test_invalid_sample_does_not_count_as_agreement(self):
+        samples = [
+            '{"op":"lookup","operands":[2]}',
+            "not json",
+            '{"op":"lookup","operands":[2]}',
+        ]
+        with patch.object(generate, "_run_validated", self._validated):
+            result = generate._selection_result(self._bundle(), samples, None)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["answer"], 20.0)
+        self.assertEqual(result["votes"], 2)
+        self.assertEqual(result["n_ok"], 2)
 
 
 class HfOomRetryTests(unittest.TestCase):
