@@ -1,0 +1,58 @@
+{
+  "schema_version": "g3a_extension_v1",
+  "builder_version": "g3b_source_program_first_v1",
+  "source": {
+    "g3a_v1_tree_sha256": "bf896aa2216f5e40f97f68dfbbadae07a152bae9abcd12c1d77bec26c1992d24",
+    "store_reports_sha256": "4dd54b3e4caf94f372eba5f2293da5352bf55c174c47d32288649f3619ea2602",
+    "public_questions_sha256": "64a428d90a8c5ad5d36a397d2de3b6e3aa4e4c1224dcdcb118fe3a4fca056ff0",
+    "public_questions_usage": "exact id/text exclusion only",
+    "config_sha256": "8d9d2580f97d8276d4f2998d58f070bf8704f34cf7e32369582afabbbc37d09c"
+  },
+  "counts": {
+    "questions": 109,
+    "by_split": {
+      "primary_tune": 54,
+      "primary_locked": 33,
+      "hard": 22
+    },
+    "by_family": {
+      "cagr": 10,
+      "count_positive": 10,
+      "debt_assets_ratio": 10,
+      "nested_margin_average": 10,
+      "note_lookup": 10,
+      "percentage_point_change": 10,
+      "prior_period_lookup": 10,
+      "ranking_argmax": 10,
+      "ranking_argmin": 10,
+      "scope_delta": 10,
+      "simple_average": 9
+    },
+    "by_output_type": {
+      "percent": 20,
+      "count": 10,
+      "ratio": 10,
+      "number": 39,
+      "percentage_point": 10,
+      "year": 20
+    }
+  },
+  "leakage_guard": {
+    "public_exact_text_overlap": [],
+    "public_id_overlap": [],
+    "cross_split_fact_overlap": {
+      "primary_tune__primary_locked": [],
+      "primary_tune__hard": [],
+      "primary_locked__hard": []
+    }
+  },
+  "files": {
+    "g3a_extension_questions.jsonl": {
+      "sha256": "4c82f7f1742f0bf0fa0d622f333596fcc88b5781b5f54e5535ce84e81d3d8424"
+    },
+    "g3a_extension_gold.jsonl": {
+      "sha256": "482baff93d6dbb04c3c09a872db7f6556277274a01aa0f69aad0ed83d9424310"
+    }
+  },
+  "fingerprint_sha256": "77642f8472a547e6a31317dceb38d60793f22d79bf8184c072d147fd92220742"
+}

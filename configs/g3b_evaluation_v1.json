@@ -1,0 +1,67 @@
+{
+  "schema_version": "g3b_config_v1",
+  "seed": 3302,
+  "allocation": {
+    "primary_tune": {
+      "ranking_argmax": 5,
+      "ranking_argmin": 5,
+      "count_positive": 5,
+      "cagr": 5,
+      "percentage_point_change": 5,
+      "nested_margin_average": 5,
+      "simple_average": 4,
+      "note_lookup": 5,
+      "scope_delta": 5,
+      "prior_period_lookup": 5,
+      "debt_assets_ratio": 5
+    },
+    "primary_locked": {
+      "ranking_argmax": 3,
+      "ranking_argmin": 3,
+      "count_positive": 3,
+      "cagr": 3,
+      "percentage_point_change": 3,
+      "nested_margin_average": 3,
+      "simple_average": 3,
+      "note_lookup": 3,
+      "scope_delta": 3,
+      "prior_period_lookup": 3,
+      "debt_assets_ratio": 3
+    },
+    "hard": {
+      "ranking_argmax": 2,
+      "ranking_argmin": 2,
+      "count_positive": 2,
+      "cagr": 2,
+      "percentage_point_change": 2,
+      "nested_margin_average": 2,
+      "simple_average": 2,
+      "note_lookup": 2,
+      "scope_delta": 2,
+      "prior_period_lookup": 2,
+      "debt_assets_ratio": 2
+    }
+  },
+  "review": {
+    "required_families": [
+      "percentage_point_change",
+      "nested_margin_average",
+      "note_lookup",
+      "scope_delta",
+      "prior_period_lookup"
+    ],
+    "primary_random_audit": 10
+  },
+  "views": {
+    "max_loto_folds": 8,
+    "max_loro_folds": 8,
+    "year_blocks": [
+      {"name": "through_2018", "max": 2018},
+      {"name": "2019_2021", "min": 2019, "max": 2021},
+      {"name": "from_2022", "min": 2022}
+    ]
+  },
+  "leaf_k": 5,
+  "public_question_use": "exact id/text exclusion only",
+  "g3a_v1_tree_sha256": "bf896aa2216f5e40f97f68dfbbadae07a152bae9abcd12c1d77bec26c1992d24"
+}

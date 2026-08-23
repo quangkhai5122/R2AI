@@ -2,31 +2,33 @@
 
 ## G3A - evaluation and promotion gate
 
-Status: implemented in v1.
+Status: complete. G3A v1 remains the immutable 144-question regression layer.
 
-Purpose:
+The source-derived extension is stored separately in
+`data/g3a_extension_v1`; it does not mutate `data/g3a_v1`. The public
+question set is used only for exact ID/text exclusion.
 
-- approximate private evaluation with new questions over the same corpus;
-- score document retrieval, table retrieval, answer, and execution together;
-- prevent public-question tuning and cross-split fact leakage;
-- require evidence-reviewed hard gold and immutable provenance;
-- promote treatments under unknown private weights.
+## G3B - typed, compositional, and OOD evaluation corpus
 
-Before final candidate freeze, expand G3A to v1.1 with ranking, count, CAGR,
-nested arithmetic, note-table facts, and ambiguous-scope examples. Keep v1
-unchanged as a regression layer.
+Status: complete and frozen on 2026-08-23.
 
-## G3B - typed canonical deterministic core
+G3B adds 109 source-derived questions across ranking, count, CAGR,
+percentage-point change, nested arithmetic, note tables, scope ambiguity,
+prior-period ambiguity, and non-money outputs. Gold programs reuse Selection-v2
+`facts/bindings/root`; no third IR or production formula engine was added.
 
-Port generalized formula, operand-role, period, unit, sign, and scope semantics
-into one typed operator registry. Do not port public id masks, gold-derived
-overrides, or a second uncontrolled formula engine.
+The gate provides:
 
-Required ablation:
+- dev on `primary_tune` only;
+- promotion on `primary_locked + hard` only after candidate freeze;
+- oracle-evidence and end-to-end modes;
+- competition-shaped DOCS/TABLES/answer/execution metrics;
+- Leaf Recall@K, FullPlanCoverage, and typed reasoning diagnostics;
+- LOTO, LOYO, LORO, LOMO, composition, and scope/period stress views.
 
-1. G3A B0 frozen baseline.
-2. Typed operator registry only.
-3. Registry plus deterministic replay/arbitration.
+The leave-one-* and stress views overlap and are diagnostic slices, not
+independent replications. The complete contract is frozen at
+`experiments/g3_evaluation_v1/g3_evaluation_freeze.json`.
 
 ## G3C - per-leaf retrieval and grounding
 

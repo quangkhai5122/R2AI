@@ -1,0 +1,110 @@
+{
+  "schema_version": "g3b_corpus_v1",
+  "builder_version": "g3b_source_program_first_v1",
+  "source": {
+    "g3a_v1_tree_sha256": "bf896aa2216f5e40f97f68dfbbadae07a152bae9abcd12c1d77bec26c1992d24",
+    "store_reports_sha256": "4dd54b3e4caf94f372eba5f2293da5352bf55c174c47d32288649f3619ea2602",
+    "public_questions_sha256": "64a428d90a8c5ad5d36a397d2de3b6e3aa4e4c1224dcdcb118fe3a4fca056ff0",
+    "public_questions_usage": "exact id/text exclusion only",
+    "config_sha256": "8d9d2580f97d8276d4f2998d58f070bf8704f34cf7e32369582afabbbc37d09c",
+    "g3a_extension_manifest_sha256": "05a1e9a5ae399d01fec7cfbe046d6e9d33040438f7dce1537e58edebf2273ce5",
+    "review_ledger_sha256": "d8fbf7f97c5ffdec395c2f4f1d1e639822f6ded0390caef060eae6c92ddefaaa"
+  },
+  "counts": {
+    "questions": 109,
+    "by_split": {
+      "primary_tune": 54,
+      "primary_locked": 33,
+      "hard": 22
+    },
+    "by_family": {
+      "cagr": 10,
+      "count_positive": 10,
+      "debt_assets_ratio": 10,
+      "nested_margin_average": 10,
+      "note_lookup": 10,
+      "percentage_point_change": 10,
+      "prior_period_lookup": 10,
+      "ranking_argmax": 10,
+      "ranking_argmin": 10,
+      "scope_delta": 10,
+      "simple_average": 9
+    },
+    "by_output_type": {
+      "percent": 20,
+      "count": 10,
+      "ratio": 10,
+      "number": 39,
+      "percentage_point": 10,
+      "year": 20
+    },
+    "reviews_required": 72,
+    "reviews_approved": 72,
+    "reviews_pending": 0
+  },
+  "leakage_guard": {
+    "public_exact_text_overlap": [],
+    "public_id_overlap": [],
+    "cross_split_fact_overlap": {
+      "primary_tune__primary_locked": [],
+      "primary_tune__hard": [],
+      "primary_locked__hard": []
+    },
+    "g3a_v1_unchanged_after_build": true
+  },
+  "semantic_contract": {
+    "selection_v2_schema_version": 2,
+    "operator_registry_sha256": "14174b9ab068f9414037139b0b76925c85dcb29d1c2935314bc351463fcc45ff",
+    "ir_policy": "reuse facts/bindings/root; no third IR"
+  },
+  "view_hashes": {
+    "loto": "9996dbeffd9848f62120a2f2ecbae43d66c1f29a52462a76da5a76c2568c031e",
+    "loyo": "8237cb372b2bb255d094c97489275751944b2c56fab549a9c8ba0f84e1131c15",
+    "loro": "f46f398640e2606df6487a2f9f99e70907f2a47ea95d854e4a6b286a06136d12",
+    "lomo": "9bfb4ec44bc0be590c5e3e2cb145df837c67da55023de30a2bc7f512bdd10b84",
+    "composition": "ed2b870dc3f758eb188f7703bc8732b17a0532b5abcedf7e0d86be253fb76f4f",
+    "scope_period_stress": "0e4b5cfc6f4a0df171264420d456eed3a00f4b0ccb5b7098df4f6d9d8bf23701"
+  },
+  "files": {
+    "g3b_questions.jsonl": {
+      "sha256": "4c82f7f1742f0bf0fa0d622f333596fcc88b5781b5f54e5535ce84e81d3d8424"
+    },
+    "g3b_dev_questions.jsonl": {
+      "sha256": "b2235d6290f6d069eff904a1d1fb0f2a97f54152b0f483a8a15a9d9fdbe4e496"
+    },
+    "g3b_promotion_questions.jsonl": {
+      "sha256": "ab97ef3113cb2a5b3b1157a217f618839d99d63d5b7a349d2fa2935b32548277"
+    },
+    "g3b_corpus.jsonl": {
+      "sha256": "482baff93d6dbb04c3c09a872db7f6556277274a01aa0f69aad0ed83d9424310"
+    },
+    "g3b_oracle_predictions.jsonl": {
+      "sha256": "dec0bcbdc801ec085ec83bd8082e7fda8c881302ba6e9ae39c102e149a82ff3f"
+    },
+    "g3b_review_queue.jsonl": {
+      "sha256": "b83cc80afe83458c249ec06c82249822de2c39bd24605af4050daf6661218be8"
+    },
+    "views/loto.json": {
+      "sha256": "9996dbeffd9848f62120a2f2ecbae43d66c1f29a52462a76da5a76c2568c031e"
+    },
+    "views/loyo.json": {
+      "sha256": "8237cb372b2bb255d094c97489275751944b2c56fab549a9c8ba0f84e1131c15"
+    },
+    "views/loro.json": {
+      "sha256": "f46f398640e2606df6487a2f9f99e70907f2a47ea95d854e4a6b286a06136d12"
+    },
+    "views/lomo.json": {
+      "sha256": "9bfb4ec44bc0be590c5e3e2cb145df837c67da55023de30a2bc7f512bdd10b84"
+    },
+    "views/composition.json": {
+      "sha256": "ed2b870dc3f758eb188f7703bc8732b17a0532b5abcedf7e0d86be253fb76f4f"
+    },
+    "views/scope_period_stress.json": {
+      "sha256": "0e4b5cfc6f4a0df171264420d456eed3a00f4b0ccb5b7098df4f6d9d8bf23701"
+    },
+    "g3b_reviews.jsonl": {
+      "sha256": "d8fbf7f97c5ffdec395c2f4f1d1e639822f6ded0390caef060eae6c92ddefaaa"
+    }
+  },
+  "fingerprint_sha256": "3f649850864fe2a95f0bc0f15de721905cf4ae3cf7579d6a8752fb4fdbea011b"
+}

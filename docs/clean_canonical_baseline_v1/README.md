@@ -34,6 +34,10 @@ these coverage counts do not establish accuracy or generalization.
 - NF4 launcher: ../../kaggle/kaggle_clean_codegen_nf4.py
 - Payload builder: ../../scripts/59_make_clean_payload_v5.py
 - Output audit: ../../scripts/63_audit_b1_nf4_run.py
+- G3 evaluation runbook:
+  ../g3a_evaluation_gate/G3B_RUNBOOK.md
+- Frozen G3 session analysis:
+  ../g3a_evaluation_gate/G3A_G3B_SESSION_RESULTS_2026-08-23.md
 
 ## Runtime contract
 
@@ -61,9 +65,10 @@ raw-code mode, and skipping manifest verification. Aggregate traces from the
 1,012 official records may identify general failure classes, but they must not
 select thresholds, per-ID patches, or submission variants.
 
-The next change is G3: a source-derived OOD benchmark split by
-ticker/report/year and frozen before candidate inspection. Only after that gate
-should B2 test guarded shortlist/evidence rescue.
+G3A/G3B is now complete and frozen. G3A v1 remained byte-identical; the
+separate extension and 109-question G3B corpus add typed/compositional,
+scope/period, and OOD diagnostic coverage. The next change is G3C retrieval,
+selected on tune and frozen before locked/hard evaluation.
 
 ## Candidate interpretation
 

@@ -1,0 +1,94 @@
+{
+  "schema_version": "g3_evaluation_freeze_v1",
+  "purpose": "freeze evaluation contract before G3C retrieval ablations",
+  "policy": {
+    "dev": "primary_tune only",
+    "promotion": "primary_locked plus hard; candidate freeze required",
+    "ood_views": "overlapping diagnostics, not independent replications",
+    "public_questions": "exact id/text exclusion only"
+  },
+  "g3a_v1": {
+    "tree_sha256": "bf896aa2216f5e40f97f68dfbbadae07a152bae9abcd12c1d77bec26c1992d24",
+    "tree_files": [
+      {
+        "path": "g3a_gold.jsonl",
+        "sha256": "de9379c5139422e7914eb32cc2dfe0e2a836a364a9dc1cca398ba1134f7c18b3"
+      },
+      {
+        "path": "g3a_hard_questions.jsonl",
+        "sha256": "fc928afa53f7853860baec9c7f0a7e3ca0c393c32e73f9c9873e348086218d02"
+      },
+      {
+        "path": "g3a_hard_review_queue.jsonl",
+        "sha256": "2072d4a8e9379849e1f7af2ed306a459fd2a155dcf3a435f9db912ba8a1adbe7"
+      },
+      {
+        "path": "g3a_hard_reviews.jsonl",
+        "sha256": "93cc27d10e8c5e8b436fe5cbd14be46a96abbbd8ab538ccb1711c24b7f19866b"
+      },
+      {
+        "path": "g3a_manifest.json",
+        "sha256": "fb915c4b243c4e537127d3c114020828f4e5b2cc655054a2d18905a863e415ab"
+      },
+      {
+        "path": "g3a_oracle_codegen.jsonl",
+        "sha256": "fc92e92f3d41dca0be8d08900e59ca17a846ddd8dbc4735077348b4c545318b4"
+      },
+      {
+        "path": "g3a_primary_locked_questions.jsonl",
+        "sha256": "c491f876578d595f908adfdcc701d6146c7d4d8f59cc30fb29234242528e3824"
+      },
+      {
+        "path": "g3a_primary_tune_questions.jsonl",
+        "sha256": "66a2791a53f793c55bb109bd0864f9bd06e431779fc17c2eb73309cc0e5b3ad6"
+      },
+      {
+        "path": "g3a_questions.jsonl",
+        "sha256": "55fe845ae6b00786d328243d6cfd37f9eeb2cfd2d85ef2a35ad649b03a52eaf4"
+      },
+      {
+        "path": "README.md",
+        "sha256": "e65d73be8be237b62ac81f11f1b3480517b27013f9c84d925e1bb0fff981e3e1"
+      }
+    ],
+    "manifest_sha256": "fb915c4b243c4e537127d3c114020828f4e5b2cc655054a2d18905a863e415ab",
+    "fingerprint_sha256": "956596dff2db953f715f4cfed5a62209438897cce1dc4d37e596d3168b8213b2"
+  },
+  "g3a_extension": {
+    "manifest_sha256": "05a1e9a5ae399d01fec7cfbe046d6e9d33040438f7dce1537e58edebf2273ce5",
+    "fingerprint_sha256": "77642f8472a547e6a31317dceb38d60793f22d79bf8184c072d147fd92220742"
+  },
+  "g3b": {
+    "manifest_sha256": "bdb328e8aa622b8d4a61bbd0378b4eca0cac4b2d62d9c46eb08d0fca33aab22e",
+    "fingerprint_sha256": "3f649850864fe2a95f0bc0f15de721905cf4ae3cf7579d6a8752fb4fdbea011b",
+    "review_ledger_sha256": "d8fbf7f97c5ffdec395c2f4f1d1e639822f6ded0390caef060eae6c92ddefaaa",
+    "view_hashes": {
+      "loto": "9996dbeffd9848f62120a2f2ecbae43d66c1f29a52462a76da5a76c2568c031e",
+      "loyo": "8237cb372b2bb255d094c97489275751944b2c56fab549a9c8ba0f84e1131c15",
+      "loro": "f46f398640e2606df6487a2f9f99e70907f2a47ea95d854e4a6b286a06136d12",
+      "lomo": "9bfb4ec44bc0be590c5e3e2cb145df837c67da55023de30a2bc7f512bdd10b84",
+      "composition": "ed2b870dc3f758eb188f7703bc8732b17a0532b5abcedf7e0d86be253fb76f4f",
+      "scope_period_stress": "0e4b5cfc6f4a0df171264420d456eed3a00f4b0ccb5b7098df4f6d9d8bf23701"
+    },
+    "questions": 109,
+    "reviews_pending": 0
+  },
+  "contract_files": {
+    "configs/g3b_evaluation_v1.json": "8d9d2580f97d8276d4f2998d58f070bf8704f34cf7e32369582afabbbc37d09c",
+    "vifinqa/g3b/__init__.py": "be5451a4ef07ff0b2156457ff5af93c369ef6e6623b931e1526202c0bb30af61",
+    "vifinqa/g3b/builder.py": "68ddce1a1c4bf489c4a9a55d3c9a972fc2bcfd08e16c813ed61fd466993f3530",
+    "vifinqa/g3b/common.py": "a9f0aba1c571cda1f42f38707416a43c37e70561c728164b4ac7def71833e6f8",
+    "vifinqa/g3b/evaluate.py": "85e1ccefbd4353253d540f4212b65619e537c8541bfb899bf9df2a01aa82531d",
+    "vifinqa/g3b/freeze.py": "6cd833f6990bf753fc291ca6bc46f73c5568026befa9fee41b65f023629ff266",
+    "vifinqa/g3b/generate.py": "168c0f2f3bf696624916127e61d219450c343938ff6389e05cadb95b83e7bf6e",
+    "vifinqa/g3b/source.py": "22d0cc55d6aa049c65b16a5ca2246e355141a10c8e81c1ec6010a9f32384eadb",
+    "vifinqa/g3b/views.py": "e7bcd549f050172ac00c87aa738c388ad12a47b814080b97015aa1f2fc45ec0f",
+    "scripts/69_g3b_build.py": "a277705909f65afb36e30cf14f8be6e7b254151bb5ee18e99c0655ba388af15b",
+    "scripts/70_g3b_review.py": "7bd6a912e5923a5decda5103271d7646ae1cbdfe8d19e03abff2e6c74bcfb39d",
+    "scripts/71_g3b_freeze_candidate.py": "dc8d1021e4ce4e78160739bb21225437862a47e8f306ba7ccf62fb9b1fdfe8e8",
+    "scripts/72_g3b_evaluate.py": "9abaebdd1da22fe8504b176b63a430684595a44d868bb4d75aca1bbcd5e8dc9a",
+    "scripts/73_freeze_g3_evaluation.py": "10845e8458204c5b6bf8accb7c2e2650ccc4e5e769825438b70a16f396564225",
+    "scripts/74_g3b_build_submission.py": "55633f1c40d62a902ae469b620e2638378a9c620bc59325fcbc27909b8f9cd93"
+  },
+  "fingerprint_sha256": "242f5b288350ba7b5728dd00bf262c38a69463cb86efd021663fb4f21ed8a877"
+}

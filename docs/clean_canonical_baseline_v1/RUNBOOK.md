@@ -85,14 +85,27 @@ into a full checkpoint.
 
 ## 7. Gate before any next private candidate
 
-1. Freeze and hash a source-derived OOD tune/locked split.
-2. Select thresholds and candidate semantics using tune only.
-3. Evaluate the frozen candidate once on locked OOD.
+G3A/G3B evaluation is complete and frozen. Verify it before starting or
+interpreting any G3C treatment:
+
+    python scripts/69_g3b_build.py validate
+    python scripts/73_freeze_g3_evaluation.py validate
+
+Expected final freeze fingerprint:
+
+    242f5b288350ba7b5728dd00bf262c38a69463cb86efd021663fb4f21ed8a877
+
+Rules for every next candidate:
+
+1. Select retrieval treatments and thresholds using G3B `primary_tune` only.
+2. Freeze the exact candidate/config/prediction artifacts before promotion.
+3. Evaluate `primary_locked + hard` once through promotion mode.
 4. Use the 1,012 official records only for crash/invariant regression after the
    candidate is frozen.
 5. Do not add per-ID fixes, masks, or public-derived overlays.
 6. Pre-register source/config/model/payload/OOD/submission hashes before using a
    private slot.
 
-The next planned work is G3 OOD evaluation, then one guarded B2
-evidence/shortlist-rescue ablation.
+The next planned work is G3C retrieval:
+canonical/BM25 control, dense union, reranking, per-leaf quota, then row/cell
+reranking. Keep planner/compiler/arbitration frozen throughout this ablation.

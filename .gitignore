@@ -5,6 +5,10 @@ artifacts/
 data/*
 !data/g3a_v1/
 !data/g3a_v1/**
+!data/g3a_extension_v1/
+!data/g3a_extension_v1/**
+!data/g3b_v1/
+!data/g3b_v1/**
 .kaggle/
 *.zip
 .codex_*

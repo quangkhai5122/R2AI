@@ -1,8 +1,12 @@
-# G3A evaluation gate v1
+# G3A and G3B evaluation gates
 
 G3A is an offline, same-corpus/new-question gate for ViFinQA. It evaluates
 the complete competition output vector instead of optimizing a guessed private
 leaderboard weight.
+G3A v1 is immutable. G3B extends coverage in separate versioned directories
+and freezes the dual-mode typed/OOD evaluation contract before G3C. See
+`G3B_RUNBOOK.md` for commands and
+`G3A_G3B_SESSION_RESULTS_2026-08-23.md` for measured results.
 
 ## What is locked
 
@@ -42,13 +46,15 @@ answer-heavy, and retrieval-heavy scores are sensitivity scenarios only.
 
 ## Rebuild and validate
 
-Run from the repository root in the project environment:
+G3A v1 is no longer rebuilt during G3B work. Validate the complete current
+contract from the repository root:
 
-    python scripts/65_g3a_build.py build
     python scripts/65_g3a_build.py validate
+    python scripts/69_g3b_build.py validate
+    python scripts/73_freeze_g3_evaluation.py validate
 
-The second command fails if a bundle hash changes or any hard record lacks an
-approved, matching review.
+The validators fail on corpus drift, review drift, public/cross-split leakage,
+OOD-view assertion failure, a changed G3A v1 tree, or final-freeze mismatch.
 
 ## Run a candidate
 
@@ -97,6 +103,9 @@ A candidate is blocked when:
 
 - submission integrity fails;
 - any main task exceeds its configured regression allowance;
+G3B adds a stricter policy: dev exposes only `primary_tune`, while promotion
+uses `primary_locked + hard` and requires an exact candidate-freeze manifest.
+Oracle evidence bypasses retrieval and cannot be cited as a retrieval result.
 - any configured private-weight scenario regresses;
 - hard-set answer accuracy regresses; or
 - no main task has a material gain.
@@ -106,9 +115,12 @@ treatment is evaluated, then commit and freeze the config hash.
 
 ## Scope limitations
 
-G3A v1 covers six program families and eight high-confidence VAS line codes. The 16 hard records were manually evidence-reviewed by the Codex agent and independently recomputed, but have not yet received a second human/domain review.
-It is a reliable first gate, not a complete model of private questions. It does
-not yet represent ranking, count, CAGR, nested formulas, note-table semantics,
-non-monetary quantities, or ambiguous entity aliases. G3A v1.1 should add those
-families with independently reviewed gold before the five private candidates
-are frozen.
+G3A v1 still covers only six program families and remains useful as the simple
+regression layer. The separate G3A extension/G3B corpus now covers ranking,
+count, CAGR, nested formulas, note-table facts, non-money outputs, scope, and
+period stress.
+
+The 16 G3A hard records and 72 required G3B records were evidence-checked and
+independently recomputed by the Codex agent, but have not received a second
+human financial-domain review. G3B is a controlled same-corpus/new-question
+gate, not proof that it matches the unknown private distribution or weights.
