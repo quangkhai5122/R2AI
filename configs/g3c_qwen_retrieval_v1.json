@@ -1,0 +1,80 @@
+{
+  "schema_version": "g3c_qwen_retrieval_v1",
+  "seed": 3303,
+  "g3_evaluation_freeze_sha256": "242f5b288350ba7b5728dd00bf262c38a69463cb86efd021663fb4f21ed8a877",
+  "eligibility_cutoff": "2026-06-01",
+  "models": {
+    "embedding": {
+      "model_id": "Qwen/Qwen3-Embedding-4B",
+      "revision": "5cf2132abc99cad020ac570b19d031efec650f2b",
+      "tokenizer_revision": "5cf2132abc99cad020ac570b19d031efec650f2b",
+      "license": "apache-2.0",
+      "revision_date": "2025-06-20",
+      "eligibility_verified": true,
+      "source": "https://huggingface.co/Qwen/Qwen3-Embedding-4B",
+      "embedding_dimension": 2560
+    },
+    "reranker": {
+      "model_id": "Qwen/Qwen3-Reranker-4B",
+      "revision": "22e683669bc0f0bd69640a1354a6d0aebcfeede5",
+      "tokenizer_revision": "22e683669bc0f0bd69640a1354a6d0aebcfeede5",
+      "license": "apache-2.0",
+      "revision_date": "2026-04-16",
+      "eligibility_verified": true,
+      "source": "https://huggingface.co/Qwen/Qwen3-Reranker-4B"
+    }
+  },
+  "instructions": {
+    "embedding_query": "Given a Vietnamese financial question, retrieve the financial-statement table that contains the exact metric, entity, period, and reporting scope required by this atomic fact.",
+    "reranker": "Determine whether the Vietnamese financial-statement passage contains evidence for the exact atomic fact, including metric, entity, period, and reporting scope. Answer yes only when all explicit constraints are compatible."
+  },
+  "runtime": {
+    "precision": "float16",
+    "attention_implementation": "sdpa",
+    "sequential_model_loading": true,
+    "quantization": "none",
+    "query_max_length": 256,
+    "table_max_length": 512,
+    "reranker_max_length": 768,
+    "row_max_length": 384,
+    "embedding_batch_size": 4,
+    "reranker_batch_size": 2
+  },
+  "retrieval": {
+    "stages": ["R0", "R0L", "R1", "R2", "R3", "R4"],
+    "depth": 20,
+    "submission_k": 5,
+    "dense_top_n_per_leaf": 24,
+    "rerank_top_n_per_leaf": 24,
+    "per_leaf_quota": 2,
+    "row_lexical_prefilter": 24,
+    "row_rerank_top_n_per_leaf": 12,
+    "rrf_k": 60,
+    "table_label_limit": 80,
+    "row_limit_per_table": 400,
+    "checkpoint_every": 4
+  },
+  "gates": {
+    "minimum_leaf_recall_at_5_delta_vs_r0": 0.02,
+    "minimum_full_plan_coverage_delta_vs_r0": 0.03,
+    "maximum_docs_f2_regression_vs_r0": 0.01,
+    "maximum_tables_f2_regression_vs_r0": 0.01,
+    "maximum_hard_constraint_violations": 0,
+    "require_integrity": true,
+    "tie_break_order": [
+      "full_plan_coverage_delta_vs_r0_desc",
+      "leaf_recall_at_5_delta_vs_r0_desc",
+      "tables_f2_macro_desc",
+      "runtime_seconds_asc",
+      "stage_name_asc"
+    ]
+  },
+  "policy": {
+    "development_split": "primary_tune",
+    "promotion_splits": ["primary_locked", "hard"],
+    "dev_payload_forbids_gold": true,
+    "promotion_requires_candidate_freeze": true,
+    "promotion_runs": 1,
+    "official_public_questions_for_selection": false
+  }
+}

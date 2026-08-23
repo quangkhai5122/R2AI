@@ -32,20 +32,54 @@ independent replications. The complete contract is frozen at
 
 ## G3C - per-leaf retrieval and grounding
 
-Add guarded rescue only when a required leaf is missing or confidence is low:
+Status: complete on 2026-08-24. R4 passed the frozen dev gate and its one-shot
+`primary_locked + hard` promotion evaluation.
 
-- leaf-specific query decomposition and candidate quotas;
-- BM25 plus dense/cross-encoder union;
-- cell/row reranking;
-- hard negatives for wrong year, scope, component, period, and unit.
+The frozen ladder is:
 
-Keep code generation and arbitration frozen during the retrieval ablation.
+    R0 frozen control
+    R0L leaf-aware lexical control
+    R1 Qwen3 dense union
+    R2 Qwen3 table reranker
+    R3 per-leaf quota
+    R4 bounded row reranker and table reorder
+
+Hard ticker/report/year/scope guards remain outside neural scoring. Query and
+passage formation are label-blind, numeric values are excluded from neural
+passages, and code generation/arbitration remain frozen.
+
+The v2 dev protocol and 54-question stripped payload are frozen. Payload v1 is
+preserved as a pre-inference Kaggle transport failure and is not an active
+runtime input. R4 improved dev DOCS F2 by 0.085190, TABLES F2 by 0.086929,
+Leaf Recall@5 by 0.120370, and FullPlanCoverage by 0.203704 versus R0. Answer
+and execution accuracy were unchanged. On promotion, R4 improved DOCS F2 by
+0.101784, TABLES F2 by 0.093116, Leaf Recall@5 by 0.133333, and
+FullPlanCoverage by 0.181819. Answer/execution again remained unchanged. The
+promotion evaluator is consumed and G3C must not be tuned from its residuals.
+
+Operational runbook:
+../g3c_qwen_retrieval/G3C_RUNBOOK.md
+
+Implementation evidence:
+../g3c_qwen_retrieval/G3C_SESSION_IMPLEMENTATION_2026-08-23.md
+
+Dev Qwen result and candidate-freeze evidence:
+../g3c_qwen_retrieval/G3C_SESSION_DEV_QWEN_RESULTS_2026-08-24.md
+
+One-shot promotion evidence:
+../g3c_qwen_retrieval/G3C_SESSION_PROMOTION_RESULTS_2026-08-24.md
 
 ## G3D - typed 14B planner
 
 Use an eligible model at or below 15B to emit multiple typed plans. Compile and
 replay every plan. Accept an LLM plan only through calibrated consensus or a
 pre-registered override rule. Preserve the deterministic core as fallback.
+
+The original G3B promotion set was opened by G3C and is now regression-only.
+Before G3D development, construct and freeze a new source-derived
+same-corpus/different-question tune/locked/hard split, disjoint by source fact
+group and question text, with a manually reviewed hard subset. R4 remains fixed
+under G3D and retrieval metrics are non-regression constraints.
 
 ## G3E - diverse specialist
 

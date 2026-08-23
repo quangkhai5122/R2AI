@@ -106,6 +106,12 @@ Rules for every next candidate:
 6. Pre-register source/config/model/payload/OOD/submission hashes before using a
    private slot.
 
-The next planned work is G3C retrieval:
-canonical/BM25 control, dense union, reranking, per-leaf quota, then row/cell
-reranking. Keep planner/compiler/arbitration frozen throughout this ablation.
+G3C retrieval is now implemented and has its own operational source of truth:
+
+    docs/g3c_qwen_retrieval/G3C_RUNBOOK.md
+
+The full Qwen dev run and one-shot locked+hard promotion completed on
+2026-08-24. R4 replicated positive retrieval gains and is frozen as P-B;
+answer/execution accuracy were unchanged. Never rerun the consumed promotion
+evaluator. Keep R4 fixed for the official crash/invariant audit and build a new
+unopened source-derived holdout before selecting G3D planner changes.

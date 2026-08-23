@@ -1,0 +1,444 @@
+{
+  "behavior_files": [
+    {
+      "path": "configs/g3c_qwen_retrieval_v1.json",
+      "sha256": "368e31eb057b7cf8f7344827cefefa05280e96add18bad0985c497768603d11d",
+      "size": 3027
+    },
+    {
+      "path": "kaggle/kaggle_g3c_qwen_retrieval.py",
+      "sha256": "112c7cb912b1281865298dde727dbe0875a9604f43863f96555ea821c73a775e",
+      "size": 1324
+    },
+    {
+      "path": "kaggle/requirements-g3c.txt",
+      "sha256": "cb22478720cc1e57ad0c60c5b0efe6dd60d350850274feab75c1cfde0e378ea3",
+      "size": 75
+    },
+    {
+      "path": "kaggle/vifinqa-g3c-dev-qwen-retrieval.ipynb",
+      "sha256": "5c3b132dd3d1cdbeab89e9cfcffe0d86404dac9ad4f56295de5ff1012d5116d2",
+      "size": 4174
+    },
+    {
+      "path": "kaggle/vifinqa-g3c-promotion-qwen-retrieval.ipynb",
+      "sha256": "c6c75af200b6c83bcf28fc11fe565354557b7f5772e16963814e471b35aa922f",
+      "size": 4207
+    },
+    {
+      "path": "scripts/60_run_clean_b0_v2.py",
+      "sha256": "11e014f8670431010b82834b07d60e90e4dc2f8a0fd704514a165ee1747d146c",
+      "size": 4729
+    },
+    {
+      "path": "scripts/71_g3b_freeze_candidate.py",
+      "sha256": "dc8d1021e4ce4e78160739bb21225437862a47e8f306ba7ccf62fb9b1fdfe8e8",
+      "size": 1171
+    },
+    {
+      "path": "scripts/72_g3b_evaluate.py",
+      "sha256": "9abaebdd1da22fe8504b176b63a430684595a44d868bb4d75aca1bbcd5e8dc9a",
+      "size": 1791
+    },
+    {
+      "path": "scripts/74_g3b_build_submission.py",
+      "sha256": "55633f1c40d62a902ae469b620e2638378a9c620bc59325fcbc27909b8f9cd93",
+      "size": 1935
+    },
+    {
+      "path": "scripts/75_g3c_audit_leaves.py",
+      "sha256": "5aa117b54c6f8788a57ddcd662039f76b1ab014763c35b945eca37403d8da5c7",
+      "size": 4534
+    },
+    {
+      "path": "scripts/76_g3c_build_payload.py",
+      "sha256": "37c0b748c33c3dbc4b5e73c6e61b8bd08945c76d80da137da2f9fb491680b7b2",
+      "size": 3478
+    },
+    {
+      "path": "scripts/77_g3c_validate_gpu_results.py",
+      "sha256": "a61aa85ec3751291c691efb15b20256da72866226e52cc80b3ba2dcd27cdb1d3",
+      "size": 1101
+    },
+    {
+      "path": "scripts/78_g3c_evaluate_stages.py",
+      "sha256": "5f71605d8aeaea4c89255362c573385db67b5a998d18575076c2e85d2c7224b4",
+      "size": 7958
+    },
+    {
+      "path": "scripts/79_g3c_select_freeze.py",
+      "sha256": "8a80ca681209d81865dae111422fb989e54f8613e145e6dc4a4f7ba33501a91c",
+      "size": 2076
+    },
+    {
+      "path": "scripts/80_g3c_freeze_protocol.py",
+      "sha256": "837ccab485d945f36d8aa1cffa68af137e25b79ae9c96dfa6e399b449b81dea8",
+      "size": 1508
+    },
+    {
+      "path": "vifinqa/clean/__init__.py",
+      "sha256": "0847c24ef10dfc49aa183b6e1e6348247031216dba4fbbc30286037c9d88d7b7",
+      "size": 302
+    },
+    {
+      "path": "vifinqa/clean/environment.py",
+      "sha256": "97ac4d074f1d92a8ee709d3f049f0e81abb7e408b7e4a370d535eb3711ffb58f",
+      "size": 885
+    },
+    {
+      "path": "vifinqa/clean/profile.py",
+      "sha256": "3ec8d84909fb4c2bdbfada63c5bde528a7dc61bb5d3def0c54cc4d71dd13f1e6",
+      "size": 2886
+    },
+    {
+      "path": "vifinqa/clean/retrieval.py",
+      "sha256": "35f6a5b786175fc2dea9d0a5ed615e936674abab956f324f68946e184ea95d12",
+      "size": 9319
+    },
+    {
+      "path": "vifinqa/codegen/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "path": "vifinqa/codegen/arbitrate.py",
+      "sha256": "430f44fecced1056edfc6d75f138315fce989f5813e00608c9d8db4c47973adf",
+      "size": 3394
+    },
+    {
+      "path": "vifinqa/codegen/atomic_slots.py",
+      "sha256": "97c07ce16e148c82520bb0a23956b25601c18822fb90a2e21846cf2bc146fa80",
+      "size": 17565
+    },
+    {
+      "path": "vifinqa/codegen/executor.py",
+      "sha256": "a025cea92a0acc99e5f074e27c4e86e8da313a0e7282dc553e0821d428fe40ba",
+      "size": 3886
+    },
+    {
+      "path": "vifinqa/codegen/fact_resolver.py",
+      "sha256": "3eb9ea27c7c3d8f5ea4090f9620a41d4689300e3daaa29e697e066bb8bb53d7a",
+      "size": 5383
+    },
+    {
+      "path": "vifinqa/codegen/formulas.py",
+      "sha256": "4d7448f913b897580347022499e38d185a7282269fea2366c3050d3cf2c96c6d",
+      "size": 4747
+    },
+    {
+      "path": "vifinqa/codegen/generate.py",
+      "sha256": "25c87e8e33338eceb15b9779c345d4c8d9afafa98cee0be848e73dc51ab3fbe5",
+      "size": 45317
+    },
+    {
+      "path": "vifinqa/codegen/hybrid.py",
+      "sha256": "344bc6c917627df7e8cf14da7df2953450123c3c1e2a4824dc828b1dc894302e",
+      "size": 10721
+    },
+    {
+      "path": "vifinqa/codegen/llm_client.py",
+      "sha256": "b2304be3819274059c0bda85b326713893bf911f6b0a87fe952b82652cf0a98f",
+      "size": 14665
+    },
+    {
+      "path": "vifinqa/codegen/prompts.py",
+      "sha256": "2dc1eb244b4a4d086481460e1e32a8c36ef262478a429c186ea8b2054d3b3315",
+      "size": 9600
+    },
+    {
+      "path": "vifinqa/codegen/rule_codegen.py",
+      "sha256": "8c3fb1d0d51ddcf339ff5ab23c55507ed215faf9c7dbac03112407e15e1ada3a",
+      "size": 6225
+    },
+    {
+      "path": "vifinqa/codegen/rule_composite.py",
+      "sha256": "eb8bcd40693952f1f2b674aa7903f67b013c39c55abfcffbefba8a778799c8a8",
+      "size": 7963
+    },
+    {
+      "path": "vifinqa/codegen/selection.py",
+      "sha256": "13a08a8c96235ff62dd2a16fba724310b2f0b45d3ef5387fe923cc5fb3bcd34c",
+      "size": 14861
+    },
+    {
+      "path": "vifinqa/codegen/selection_replay.py",
+      "sha256": "8c34ee30bf19dda4be98007fa219682ce0c265b361062b9bb4dd444737b7a5e9",
+      "size": 19382
+    },
+    {
+      "path": "vifinqa/codegen/selection_v2.py",
+      "sha256": "abec018328dc74f4c07c27a6015eaa7d84d40f10d9cef13468ab1f76fea1ea77",
+      "size": 59675
+    },
+    {
+      "path": "vifinqa/codegen/selection_v2_prompt.py",
+      "sha256": "ab92dc43b80851b95fbe11bdd55e1d7ddb3d78c5db5d26f1c18b820507cdfea0",
+      "size": 7912
+    },
+    {
+      "path": "vifinqa/codegen/selection_v2_replay.py",
+      "sha256": "8633b105815e0c3173e4cce7bd53a8e319613663dcd135d76d621bcb32ccd3cd",
+      "size": 19008
+    },
+    {
+      "path": "vifinqa/codegen/semantic.py",
+      "sha256": "8913de9d8bfebe99e2fca003473c145c89c035ce1e6e0d2c259b40562a18f812",
+      "size": 4773
+    },
+    {
+      "path": "vifinqa/codegen/semantic_repair.py",
+      "sha256": "cb2bd65444005f0f94c955b92068fd1983fdc1c73df04c3083c062b25aefe4f1",
+      "size": 30606
+    },
+    {
+      "path": "vifinqa/codegen/semantic_repair_v52b.py",
+      "sha256": "9a03ef2048f7d0d724505e66cef75583ac03d2864af170731a4eed279d4a7410",
+      "size": 36361
+    },
+    {
+      "path": "vifinqa/codegen/single_cell_consensus.py",
+      "sha256": "ad154f7e89f7706bc2752b182c7c56b042805e1fab4ab233fc8e4cdf6a221344",
+      "size": 31713
+    },
+    {
+      "path": "vifinqa/codegen/to_expression.py",
+      "sha256": "06c7fecdb3e251a3d8d6ba03074eb86b8f0e8917d0dfbf7d99469e56baaff0ce",
+      "size": 4788
+    },
+    {
+      "path": "vifinqa/codegen/units.py",
+      "sha256": "78f6977da03815361b7118b78d1599d62f5883b1fc6f84f43f00d77b39b95832",
+      "size": 3253
+    },
+    {
+      "path": "vifinqa/config.py",
+      "sha256": "caf4bcef61f1c3abaca25b1f9be89c1bf8f41e8a127615fea58cf23170c577c8",
+      "size": 2074
+    },
+    {
+      "path": "vifinqa/extraction/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "path": "vifinqa/extraction/build_store.py",
+      "sha256": "0ee72ff4360e28c7d9f2a62b62bb3fd9be5dc69672dfd172d3c68986e5ab49c2",
+      "size": 6558
+    },
+    {
+      "path": "vifinqa/extraction/html_tables.py",
+      "sha256": "a259089101e7daa7c336e859e480040ab6e90df3e1f313928edfff5bc91ee753",
+      "size": 3116
+    },
+    {
+      "path": "vifinqa/extraction/report_parser.py",
+      "sha256": "448974d575e91299e0f375181fdf047f3e58ffc12356597f354be1160774e100",
+      "size": 7629
+    },
+    {
+      "path": "vifinqa/extraction/unit_policy.py",
+      "sha256": "79761a921fafbfa6b2b01d36982f4842955e6839b19913dfedc94efb32fb0758",
+      "size": 2977
+    },
+    {
+      "path": "vifinqa/finance/__init__.py",
+      "sha256": "b7a16cd82e7a232a014cf1c15135c48e1ade051965ca10d4430e2d49792e60ef",
+      "size": 486
+    },
+    {
+      "path": "vifinqa/finance/metrics.py",
+      "sha256": "586dc58fda5a412bd279f56236ca6c2a5294ba2f3c28ea457dcb2497ae34d2b3",
+      "size": 40421
+    },
+    {
+      "path": "vifinqa/finance/operators.py",
+      "sha256": "3090e6631b1705b288c311e09d2f300528335ed045073821eaa4365970c9199b",
+      "size": 3740
+    },
+    {
+      "path": "vifinqa/finance/operators/__init__.py",
+      "sha256": "b23f6ff8bfe6e6e1b89dbcda8119eff88342bd3a4a43806905be8c4927ed08e1",
+      "size": 3672
+    },
+    {
+      "path": "vifinqa/finance/schemas.py",
+      "sha256": "d1c3eecfbd218c67b559057c96788ffb6a21b2264c2c474e58e6d0962fe53cc2",
+      "size": 1662
+    },
+    {
+      "path": "vifinqa/g3c/__init__.py",
+      "sha256": "aa7284f61ecea36da2569a35423ce831b5933e0580441dcf04945f2afc15b9ac",
+      "size": 450
+    },
+    {
+      "path": "vifinqa/g3c/cache.py",
+      "sha256": "5e659b55548debbd318f847caeb1015bf1a7c39124ea08a726e4d0c0f019791d",
+      "size": 3541
+    },
+    {
+      "path": "vifinqa/g3c/common.py",
+      "sha256": "20bd1723fc4bf7bba03e636d8c137ca59020f7d0c8c2245730b53f19da44f2de",
+      "size": 8619
+    },
+    {
+      "path": "vifinqa/g3c/freeze.py",
+      "sha256": "9f66cc7390d506df40a29f33ed871ba186c20244b1578aa68d295eb5ab20d548",
+      "size": 11086
+    },
+    {
+      "path": "vifinqa/g3c/leaves.py",
+      "sha256": "d43d895fc7dfa7ad558018925e36d13391d7ba1b1db1dd1feb657ca6e5432c74",
+      "size": 11238
+    },
+    {
+      "path": "vifinqa/g3c/modeling.py",
+      "sha256": "ebfa294205db000b10561d33d04c7db1721ce87497449632ede8cdc7f32a74d9",
+      "size": 13223
+    },
+    {
+      "path": "vifinqa/g3c/paired.py",
+      "sha256": "050c3a3f44f24d1d63d71d63d9dc108e4669e566ce9fe39eb389328108af9248",
+      "size": 6108
+    },
+    {
+      "path": "vifinqa/g3c/payload.py",
+      "sha256": "c805fe10bfcecc5ec5e8fee23c3a9a47ea5e4aa986a617c65073a8b5ad6f7d97",
+      "size": 16261
+    },
+    {
+      "path": "vifinqa/g3c/pipeline.py",
+      "sha256": "fed440bd30efff5ac353864d68d2553f0b99a36501a639567fe7244b29c6428b",
+      "size": 20197
+    },
+    {
+      "path": "vifinqa/g3c/protocol.py",
+      "sha256": "da3416138c1beee76d8e7ea1a16883aef605624a1fcd172096fe4ee5eda25e6f",
+      "size": 5927
+    },
+    {
+      "path": "vifinqa/g3c/retrieval.py",
+      "sha256": "3e828d742a7d90cb60ede2a14b41c3b2e6d63a16ff5d1c9599df9e32d00ddd2d",
+      "size": 16988
+    },
+    {
+      "path": "vifinqa/g3c/serialize.py",
+      "sha256": "d388c39199a611060eb4ba23f2b3c050cdae93618cda79a53e99ee9ad2825248",
+      "size": 6953
+    },
+    {
+      "path": "vifinqa/g3c/validate.py",
+      "sha256": "018cf6ae05735a712c5115243d7efddc62e44720aae61feb687e2563b29c7134",
+      "size": 8867
+    },
+    {
+      "path": "vifinqa/retrieval/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "path": "vifinqa/retrieval/bm25.py",
+      "sha256": "46e15d3184cdca683dd37be6afe48d2d880b9a080b3999395eda94fdb31512d1",
+      "size": 1197
+    },
+    {
+      "path": "vifinqa/retrieval/dense.py",
+      "sha256": "0fee8c241377fdc899d9a0453324560c2b06c5cc34a82b44638f18716525a087",
+      "size": 5431
+    },
+    {
+      "path": "vifinqa/retrieval/retrieve.py",
+      "sha256": "d8f191e647657b142e46ed35974a55381dc54a59998fde49b9252482861ebbcd",
+      "size": 4645
+    },
+    {
+      "path": "vifinqa/retrieval/serialize.py",
+      "sha256": "22343d6e8b789f67a972c2d007ef24c92ddfd4217dddcd318225948ff7f2500a",
+      "size": 3642
+    },
+    {
+      "path": "vifinqa/retrieval/shortlist.py",
+      "sha256": "c8d97d3ebb413aca410de7c6e0b64c5edef018c4e447b638ab53038c5c328a25",
+      "size": 29042
+    },
+    {
+      "path": "vifinqa/router/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "path": "vifinqa/router/decompose.py",
+      "sha256": "fe13576567c45c27528c0971438b9099e533c62712c833524e7aa28fb19a82d3",
+      "size": 6203
+    },
+    {
+      "path": "vifinqa/router/entities.py",
+      "sha256": "358a1088aeed22faa87bfeedf18cec6c90ed028ff9db428eced7858e182bf138",
+      "size": 15323
+    },
+    {
+      "path": "vifinqa/router/metric_phrase.py",
+      "sha256": "1b62e0360d531308970f3cc1ebfad566a0a4c0f8314f3a486170e0821f82d12b",
+      "size": 6799
+    },
+    {
+      "path": "vifinqa/router/router.py",
+      "sha256": "f31d57c420939eb792d477690f02817ebd6d5b1b7e2e069b1263313c1ea09986",
+      "size": 4591
+    },
+    {
+      "path": "vifinqa/utils/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "path": "vifinqa/utils/io.py",
+      "sha256": "ea8b96b9f34b140ed30310e6bdabe85925ed336296d7fe47eb9e5e42db040c95",
+      "size": 1314
+    },
+    {
+      "path": "vifinqa/utils/viet_num.py",
+      "sha256": "ec3b78802a393f2405321dfe763dbedc7eedfa60300a5533a3c47520e7cea1c4",
+      "size": 3593
+    },
+    {
+      "path": "vifinqa/utils/viet_text.py",
+      "sha256": "609889bd85091a69b441bc4cf209b1b47db56e76f2119e4b29a26a68af51254e",
+      "size": 3099
+    }
+  ],
+  "behavior_tree_sha256": "f1f99c3189393ccd092784b3cd756b6989fe928335f1693255c7da831506e0b5",
+  "config_sha256": "a691497b9581136de2dc20adedca06868a0e791aee5c8fb9b5c3f657f5b9ded1",
+  "g3_evaluation_freeze_file_sha256": "451438903a0c39cdce32a9f08c0ad42a666fd33b32e09d70b34f5cce67c55808",
+  "g3_evaluation_freeze_sha256": "242f5b288350ba7b5728dd00bf262c38a69463cb86efd021663fb4f21ed8a877",
+  "gate_contract_sha256": "25cf1a9f8a1109d3916af2850796c99371a3fe9612d51033dc8a17faeed293a2",
+  "instructions_sha256": "447fdc4cf4701ae41daa9379f88452c5bc9411b820e29a922888b098a64939fb",
+  "model_revisions": {
+    "embedding": {
+      "model_id": "Qwen/Qwen3-Embedding-4B",
+      "revision": "5cf2132abc99cad020ac570b19d031efec650f2b",
+      "revision_date": "2025-06-20",
+      "tokenizer_revision": "5cf2132abc99cad020ac570b19d031efec650f2b"
+    },
+    "reranker": {
+      "model_id": "Qwen/Qwen3-Reranker-4B",
+      "revision": "22e683669bc0f0bd69640a1354a6d0aebcfeede5",
+      "revision_date": "2026-04-16",
+      "tokenizer_revision": "22e683669bc0f0bd69640a1354a6d0aebcfeede5"
+    }
+  },
+  "protocol_fingerprint": "af86c8ffc276cc0a92ceeb3cc0ddc3a7eeaa7b6a1e4430dc2cade8ac4c9621c5",
+  "retrieval_contract_sha256": "4dbe0c4eace7028413604fe9a8610ad0eece2d7071fffa2c2cfdbbe89bd64ca5",
+  "runtime_contract_sha256": "881bfed22a9796a9e53bfa3bbae6801caac8a00aee183bc5d0200a0b1ca5c616",
+  "schema_version": "g3c_dev_protocol_freeze_v1",
+  "scientific_boundary": {
+    "development_split": "primary_tune",
+    "gold_in_gpu_payload": false,
+    "promotion_runs": 1,
+    "promotion_splits": [
+      "primary_locked",
+      "hard"
+    ],
+    "reasoning_stack_frozen": true
+  },
+  "status": "frozen_before_first_qwen_dev_run"
+}

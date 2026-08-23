@@ -38,6 +38,16 @@ these coverage counts do not establish accuracy or generalization.
   ../g3a_evaluation_gate/G3B_RUNBOOK.md
 - Frozen G3 session analysis:
   ../g3a_evaluation_gate/G3A_G3B_SESSION_RESULTS_2026-08-23.md
+- Active G3C retrieval runbook:
+  ../g3c_qwen_retrieval/G3C_RUNBOOK.md
+- G3C implementation session:
+  ../g3c_qwen_retrieval/G3C_SESSION_IMPLEMENTATION_2026-08-23.md
+- G3C Kaggle payload v2 transport-fix session:
+  ../g3c_qwen_retrieval/G3C_SESSION_KAGGLE_PAYLOAD_V2_FIX_2026-08-24.md
+- G3C real-Qwen dev result and candidate freeze:
+  ../g3c_qwen_retrieval/G3C_SESSION_DEV_QWEN_RESULTS_2026-08-24.md
+- G3C one-shot promotion result:
+  ../g3c_qwen_retrieval/G3C_SESSION_PROMOTION_RESULTS_2026-08-24.md
 
 ## Runtime contract
 
@@ -67,8 +77,14 @@ select thresholds, per-ID patches, or submission variants.
 
 G3A/G3B is now complete and frozen. G3A v1 remained byte-identical; the
 separate extension and 109-question G3B corpus add typed/compositional,
-scope/period, and OOD diagnostic coverage. The next change is G3C retrieval,
-selected on tune and frozen before locked/hard evaluation.
+scope/period, and OOD diagnostic coverage. G3C retrieval uses the frozen v2
+protocol. The full Qwen dev run passed strict validation and R4 passed the
+pre-registered gate with `+0.120370` Leaf Recall@5 and `+0.203704`
+FullPlanCoverage versus R0. The one-shot locked+hard evaluation then replicated
+the retrieval gain: DOCS F2 `+0.101784`, TABLES F2 `+0.093116`, Leaf
+`+0.133333`, and FullPlan `+0.181819`. Answer accuracy was unchanged in both
+sets. G3C is complete as a same-corpus retrieval hypothesis; its promotion set
+is now opened and regression-only.
 
 ## Candidate interpretation
 
