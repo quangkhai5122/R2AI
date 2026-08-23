@@ -1,0 +1,68 @@
+{
+  "schema_version": "g3a_config_v1",
+  "seed": 3301,
+  "allocation": {
+    "primary_tune": {
+      "lookup": 20,
+      "difference": 14,
+      "growth_pct": 14,
+      "average": 10,
+      "net_margin": 11,
+      "debt_to_assets": 11
+    },
+    "primary_locked": {
+      "lookup": 12,
+      "difference": 8,
+      "growth_pct": 8,
+      "average": 6,
+      "net_margin": 7,
+      "debt_to_assets": 7
+    },
+    "hard": {
+      "lookup": 2,
+      "difference": 4,
+      "growth_pct": 3,
+      "average": 3,
+      "net_margin": 2,
+      "debt_to_assets": 2
+    }
+  },
+  "weight_scenarios": {
+    "balanced_unknown": {
+      "docs_f2_macro": 0.333333,
+      "tables_f2_macro": 0.333333,
+      "answer_accuracy": 0.333334
+    },
+    "answer_heavy": {
+      "docs_f2_macro": 0.2,
+      "tables_f2_macro": 0.2,
+      "answer_accuracy": 0.6
+    },
+    "retrieval_heavy": {
+      "docs_f2_macro": 0.3,
+      "tables_f2_macro": 0.4,
+      "answer_accuracy": 0.3
+    }
+  },
+  "promotion_gate": {
+    "metric_paths": [
+      "metrics.docs_f2_macro",
+      "metrics.tables_f2_macro",
+      "metrics.answer_accuracy",
+      "metrics.execution_accuracy"
+    ],
+    "max_regression": {
+      "metrics.docs_f2_macro": 0.005,
+      "metrics.tables_f2_macro": 0.005,
+      "metrics.answer_accuracy": 0.005,
+      "metrics.execution_accuracy": 0.005
+    },
+    "min_material_gain": {
+      "metrics.docs_f2_macro": 0.01,
+      "metrics.tables_f2_macro": 0.01,
+      "metrics.answer_accuracy": 0.02,
+      "metrics.execution_accuracy": 0.02
+    },
+    "hard_answer_max_regression": 0.0
+  }
+}

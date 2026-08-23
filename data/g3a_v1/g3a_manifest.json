@@ -1,0 +1,94 @@
+{
+  "schema_version": "g3a_bundle_v1",
+  "builder_version": "g3a_program_first_v1",
+  "seed": 3301,
+  "source": {
+    "store_dir": "artifacts\\store",
+    "reports_sha256": "4dd54b3e4caf94f372eba5f2293da5352bf55c174c47d32288649f3619ea2602",
+    "selected_evidence_sha256": "6f5a162369a93fde8e91f54cd2895a2a7848d252f7930dd2fb9381e688e236ca",
+    "public_questions_path": "data\\ViFinQA\\questions\\questions.jsonl",
+    "public_questions_sha256": "64a428d90a8c5ad5d36a397d2de3b6e3aa4e4c1224dcdcb118fe3a4fca056ff0",
+    "public_questions_usage": "exact-id/text exclusion only; never template input",
+    "config_path": "configs\\g3a_evaluation_gate_v1.json",
+    "config_sha256": "e1d77f2dc7b9b5713ca64ee425a2635926b891f04832083ad18233038db626b3",
+    "hard_reviews_path": "data\\g3a_v1\\g3a_hard_reviews.jsonl",
+    "hard_reviews_sha256": "93cc27d10e8c5e8b436fe5cbd14be46a96abbbd8ab538ccb1711c24b7f19866b"
+  },
+  "counts": {
+    "selected_facts": 254,
+    "questions": 144,
+    "by_split": {
+      "primary_tune": 80,
+      "primary_locked": 48,
+      "hard": 16
+    },
+    "by_operator": {
+      "average": 19,
+      "debt_to_assets": 20,
+      "difference": 26,
+      "growth_pct": 25,
+      "lookup": 34,
+      "net_margin": 20
+    },
+    "hard_approved": 16,
+    "hard_pending": 0
+  },
+  "leakage_guard": {
+    "public_exact_text_overlap": [],
+    "public_id_overlap": [],
+    "cross_split_fact_overlap": {
+      "primary_tune__primary_locked": [],
+      "primary_tune__hard": [],
+      "primary_locked__hard": []
+    },
+    "fact_sets_sha256": {
+      "primary_tune": "e2b27fce39bfca45d1ef00b48196fa851cea8b6779de95e54f7580708164b2e3",
+      "primary_locked": "3a7c2162a16c2eae5d1036c7103a249699d8644ff99d77575e1fdef0679fdd25",
+      "hard": "3d6fcc241ecaa963ad3bbbd2e8475b27ea6bc6a17b7b2b4d96d77033b355482d"
+    }
+  },
+  "metric_contract": {
+    "retrieval": [
+      "docs_precision_macro",
+      "docs_recall_macro",
+      "docs_f2_macro",
+      "docs_mrr5",
+      "tables_precision_macro",
+      "tables_recall_macro",
+      "tables_f2_macro",
+      "tables_mrr5"
+    ],
+    "submission": [
+      "answer_accuracy",
+      "execution_accuracy"
+    ],
+    "private_weight_policy": "unknown; retain vector plus configured stress scenarios"
+  },
+  "files": {
+    "g3a_questions.jsonl": {
+      "sha256": "55fe845ae6b00786d328243d6cfd37f9eeb2cfd2d85ef2a35ad649b03a52eaf4"
+    },
+    "g3a_gold.jsonl": {
+      "sha256": "de9379c5139422e7914eb32cc2dfe0e2a836a364a9dc1cca398ba1134f7c18b3"
+    },
+    "g3a_oracle_codegen.jsonl": {
+      "sha256": "fc92e92f3d41dca0be8d08900e59ca17a846ddd8dbc4735077348b4c545318b4"
+    },
+    "g3a_hard_review_queue.jsonl": {
+      "sha256": "2072d4a8e9379849e1f7af2ed306a459fd2a155dcf3a435f9db912ba8a1adbe7"
+    },
+    "g3a_primary_tune_questions.jsonl": {
+      "sha256": "66a2791a53f793c55bb109bd0864f9bd06e431779fc17c2eb73309cc0e5b3ad6"
+    },
+    "g3a_primary_locked_questions.jsonl": {
+      "sha256": "c491f876578d595f908adfdcc701d6146c7d4d8f59cc30fb29234242528e3824"
+    },
+    "g3a_hard_questions.jsonl": {
+      "sha256": "fc928afa53f7853860baec9c7f0a7e3ca0c393c32e73f9c9873e348086218d02"
+    },
+    "g3a_hard_reviews.jsonl": {
+      "sha256": "93cc27d10e8c5e8b436fe5cbd14be46a96abbbd8ab538ccb1711c24b7f19866b"
+    }
+  },
+  "bundle_fingerprint_sha256": "956596dff2db953f715f4cfed5a62209438897cce1dc4d37e596d3168b8213b2"
+}
