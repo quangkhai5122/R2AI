@@ -4,6 +4,7 @@ __pycache__/
 artifacts/
 data/
 .kaggle/
+.codegraph/
 *.zip
 .DS_Store
 results-*/
