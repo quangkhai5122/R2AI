@@ -82,7 +82,10 @@ def tidy_df(meta_row) -> pd.DataFrame:
 
 
 def tidy_csv_text(meta_row) -> str:
-    return tidy_df(meta_row).to_csv(index=False)
+    # Keep evidence bytes stable across Windows and Linux/Kaggle. The Python
+    # CSV default uses the host line separator, which otherwise makes an exact
+    # local rebuild differ from the frozen remote submission.
+    return tidy_df(meta_row).to_csv(index=False, lineterminator="\n")
 
 
 def df_roundtrip(csv_text: str) -> pd.DataFrame:

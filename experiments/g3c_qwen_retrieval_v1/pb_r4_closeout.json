@@ -1,0 +1,105 @@
+{
+  "bounded_claim": "R4 improved frozen retrieval metrics on dev and one-shot same-corpus/different-question promotion; answer accuracy did not improve.",
+  "candidate_fingerprint": "1cb02ad5e436d95efe18db0f7d8bbcb2e47cb6f65291892b4a78002d32f8336a",
+  "candidate_name": "g3c-qwen-retrieval-v1-r4",
+  "closed_on": "2026-08-24",
+  "closeout_fingerprint": "1c76675392369ab1d3133e54aeed38813492426f89ea1f627e0c21e482f0759d",
+  "evidence": {
+    "baseline_evaluation": {
+      "path": "artifacts/g3b_v1/b0_promotion_evaluation.json",
+      "sha256": "879a5313396d8d56f6f4c0578d081fcbd0557a947177fab51c4a15b2f2ac70dc",
+      "size": 145412
+    },
+    "candidate_evaluation": {
+      "path": "artifacts/g3c_v1/promotion_local_eval/r4/g3b_evaluation.json",
+      "sha256": "4cec1fbe61170711a862fc12f925263ef869d5fa9399b4ee2ec411abfa9ff66c",
+      "size": 144509
+    },
+    "candidate_freeze": {
+      "path": "artifacts/g3c_v1/dev_local_eval/g3c_candidate_freeze.json",
+      "sha256": "ee81d8943de38cf0abe99c653edba9029ae482925f0b1cd4d6ae74218a72fae2",
+      "size": 2102
+    },
+    "config": {
+      "path": "configs/g3c_qwen_retrieval_v1.json",
+      "sha256": "368e31eb057b7cf8f7344827cefefa05280e96add18bad0985c497768603d11d",
+      "size": 3027
+    },
+    "dev_protocol_freeze": {
+      "path": "experiments/g3c_qwen_retrieval_v1/dev_protocol_freeze_v2.json",
+      "sha256": "07e9135095a93bc9f1d3e148dadd3c0cc725a49f67a813505fc46d7e0e6f06cd",
+      "size": 14920
+    },
+    "paired_diagnostics": {
+      "path": "artifacts/g3c_v1/promotion_local_eval/r4/paired_vs_r0.json",
+      "sha256": "0ce4c4c9e1a3e2cf8af9ff42250438530e040e885cacebe54628c38121459a2b",
+      "size": 58684
+    },
+    "promotion_import_validation": {
+      "path": "artifacts/g3c_v1/promotion_qwen_import_validation.json",
+      "sha256": "26dbc0297a388948f838d2f00adc845b30f6a909775d2f9ce539faa02a7b892f",
+      "size": 2106
+    },
+    "promotion_open_marker": {
+      "path": "artifacts/g3c_v1/promotion_local_eval/PROMOTION_EVALUATION_OPENED.json",
+      "sha256": "4ec0577b4a4329ff63a83b0f0481e99db9a966b910f80fc675d8f4895c364b9e",
+      "size": 274
+    },
+    "promotion_payload_manifest": {
+      "path": "artifacts/g3c_v1/promotion_payload/g3c_gpu_payload_manifest.json",
+      "sha256": "0f7083137ab7c43e9720cf3b38ead26a2105b988c8bac801b429f1d81f4c0d35",
+      "size": 41826
+    },
+    "promotion_result_manifest": {
+      "path": "artifacts/g3c_v1/promotion_qwen_results/g3c_gpu_result_manifest.json",
+      "sha256": "d36b26629c00a8c64f8cf4e53fae056a938f23eb274b6ebfcd2eefa8a9ce8df5",
+      "size": 3658
+    }
+  },
+  "official_1012_policy": {
+    "gold_or_public_score_dependency_allowed": false,
+    "purpose": "post_freeze_crash_schema_finiteness_audit_only",
+    "question_specific_changes_allowed": false,
+    "selection_or_tuning_allowed": false
+  },
+  "promotion_evaluator_consumed": true,
+  "promotion_metrics": {
+    "answer_accuracy": {
+      "delta": 0.0,
+      "r0": 0.181818,
+      "r4": 0.181818
+    },
+    "docs_f2_macro": {
+      "delta": 0.101784,
+      "r0": 0.898216,
+      "r4": 1.0
+    },
+    "execution_accuracy": {
+      "delta": 0.0,
+      "r0": 0.181818,
+      "r4": 0.181818
+    },
+    "full_plan_coverage_rate": {
+      "delta": 0.181819,
+      "r0": 0.654545,
+      "r4": 0.836364
+    },
+    "leaf_recall_at_k": {
+      "delta": 0.133333,
+      "r0": 0.786364,
+      "r4": 0.919697
+    },
+    "tables_f2_macro": {
+      "delta": 0.093116,
+      "r0": 0.613054,
+      "r4": 0.70617
+    }
+  },
+  "promotion_payload_fingerprint": "05a98f22ba6b69eccd91f854be1ddc78b0192c050ab7bdfdfdb639af735f97be",
+  "promotion_rerun_allowed": false,
+  "promotion_run_signature": "718bbdd81f765257d67fc985999207ae341a197e00d93b5853acfdd8f2aec038",
+  "protocol_fingerprint": "af86c8ffc276cc0a92ceeb3cc0ddc3a7eeaa7b6a1e4430dc2cade8ac4c9621c5",
+  "schema_version": "g3c_pb_r4_closeout_v1",
+  "selected_stage": "R4",
+  "status": "g3c_complete_pb_r4_frozen"
+}

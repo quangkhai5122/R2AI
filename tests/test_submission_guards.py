@@ -9,7 +9,9 @@ from vifinqa.submission.build import (
     _validate_codegen_evidence,
     _validate_replay,
     _validate_zip_layout,
+    _write_text_exact,
 )
+from vifinqa.retrieval.serialize import tidy_csv_text
 
 
 class SubmissionGuardTests(unittest.TestCase):
@@ -65,6 +67,25 @@ class SubmissionGuardTests(unittest.TestCase):
             }
             with self.assertRaisesRegex(ValueError, "replay failed"):
                 _validate_replay([entry], root)
+
+    def test_csv_write_does_not_translate_newlines(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "table.csv"
+            value = "header\r\n1\r\n"
+            _write_text_exact(path, value)
+            self.assertEqual(path.read_bytes(), value.encode("utf-8"))
+
+    def test_tidy_csv_uses_platform_independent_lf(self):
+        meta = {
+            "grid_json": json.dumps([
+                ["Chỉ tiêu", "Năm 2023"],
+                ["Doanh thu", "100"],
+            ]),
+            "unit_scale": 1.0,
+        }
+        value = tidy_csv_text(meta)
+        self.assertIn("\n", value)
+        self.assertNotIn("\r", value)
 
 
 if __name__ == "__main__":

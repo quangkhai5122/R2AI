@@ -265,7 +265,19 @@ def _write_table_csv(store: Store, report_id: str, table_pos: int, path: Path) -
     row = tdf[tdf.table_pos == table_pos]
     if not len(row):
         raise KeyError(f"missing evidence table in store: {report_id}|{table_pos}")
-    path.write_text(tidy_csv_text(row.iloc[0].to_dict()), encoding="utf-8")
+    _write_text_exact(
+        path, tidy_csv_text(row.iloc[0].to_dict())
+    )
+
+
+def _write_text_exact(path: Path, value: str) -> None:
+    """Write UTF-8 without platform newline translation.
+
+    pandas CSV text already contains its intended line terminators. Text-mode
+    writing on Windows otherwise changes ``\r\n`` into ``\r\r\n``, making a
+    locally rebuilt evidence archive differ from the Kaggle/Linux artifact.
+    """
+    path.write_bytes(value.encode("utf-8"))
 
 
 def _read_unique_by_id(path: Path, label: str) -> dict[int, dict]:

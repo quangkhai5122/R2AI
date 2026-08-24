@@ -1,0 +1,65 @@
+{
+  "active_candidate": {
+    "candidate_fingerprint": "1cb02ad5e436d95efe18db0f7d8bbcb2e47cb6f65291892b4a78002d32f8336a",
+    "candidate_name": "g3c-qwen-retrieval-v1-r4",
+    "closeout": "experiments/g3c_qwen_retrieval_v1/pb_r4_closeout.json",
+    "closeout_sha256": "e15dd60778d53687dd9886385e891758c94decaaf50b31b5989dea55cdb0a4fb",
+    "hypothesis_class": "P-B retrieval",
+    "selected_stage": "R4",
+    "status": "promotion_passed_frozen"
+  },
+  "next_scientific_hypothesis": "G3D typed planning and row/cell grounding",
+  "official_1012": {
+    "artifact_freeze": {
+      "path": "artifacts/g3c_v1/official_qwen_results/g3c_official_artifact_freeze.json",
+      "sha256": "a10997eedaa89d8edd6a01596b87fa5cfb6caf4a3561a2a3924280b921649960"
+    },
+    "expected_records": 1012,
+    "r0_passthrough_records": 14,
+    "r4": {
+      "path": "artifacts/g3c_v1/official_qwen_results/r4_retrieval.jsonl",
+      "sha256": "1281af9a737fd235e61b275c4ffebe34624d4790be6c043c81ca88d8552132d5"
+    },
+    "result_manifest": {
+      "path": "artifacts/g3c_v1/official_qwen_results/g3c_official_result_manifest.json",
+      "sha256": "0c7606566c80e88cc6d0e8189a44d1d3758c9c19f167af8273a10a7a10580f1b"
+    },
+    "selection_role": "none",
+    "status": "engineering_audit_passed",
+    "supported_r4_records": 998
+  },
+  "promotion": {
+    "maximum_runs": 1,
+    "rerun_allowed": false,
+    "runs_consumed": 1
+  },
+  "public_retrieval_diagnostic": {
+    "aggregate_score_observation_only": true,
+    "audit": {
+      "fingerprint": "36dd9a35907d5e816812ac38885d467e1bde8c0f723c7fbe275b39304d3401c2",
+      "path": "artifacts/g3c_v1/official_submission_b1fixed_r4_v1/g3c_public_retrieval_diagnostic_audit.json",
+      "sha256": "b9ebe65b9f4fe88d99cb1838899c5ac2eb587579cece67aa983bac5479207190"
+    },
+    "candidate_name": "G3C-R4-B1-fixed-public-retrieval-diagnostic-v1",
+    "canonical_private_pb_artifact": false,
+    "expected_answer_accuracy": 0.1897,
+    "expected_execution_accuracy": 0.1897,
+    "manifest": {
+      "fingerprint": "c557ad5cd9d42b85ec8a426e990e9806d8bdb7f9feb841f79a03d7eac75fadba",
+      "path": "artifacts/g3c_v1/official_submission_b1fixed_r4_v1/g3c_public_retrieval_diagnostic_manifest.json",
+      "sha256": "e9bac532aa6f256993cad93739b0cea9a28d98a2081bf2c34ee7c56f83c72e02"
+    },
+    "purpose": "measure_public_aggregate_retrieval_metrics_only",
+    "retuning_or_selection_allowed": false,
+    "status": "ready_for_public_dashboard_upload",
+    "submission": {
+      "path": "artifacts/g3c_v1/official_submission_b1fixed_r4_v1/submission.zip",
+      "sha256": "a20257967fa0dbdf1659978ef901489eb0bd7ae6d1d03fbc1ccf55667164c319",
+      "size": 1699607
+    }
+  },
+  "registry_fingerprint": "d64f954438618db9a68ebfd9806a0f91ae496320adfb59032942d780eb69e817",
+  "schema_version": "g3c_experiment_registry_v1",
+  "updated_on": "2026-08-24",
+  "workstream": "clean-canonical-baseline-v1"
+}

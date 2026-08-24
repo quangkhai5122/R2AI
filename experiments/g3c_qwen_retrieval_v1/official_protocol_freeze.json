@@ -1,0 +1,147 @@
+{
+  "behavior_files": [
+    {
+      "path": "configs/g3c_official_1012_v1.json",
+      "sha256": "83e4db5f413217c2dff2176ac5a497946ceeee691d7cca80a03925c4d3f09d72",
+      "size": 1733
+    },
+    {
+      "path": "configs/g3c_qwen_retrieval_v1.json",
+      "sha256": "368e31eb057b7cf8f7344827cefefa05280e96add18bad0985c497768603d11d",
+      "size": 3027
+    },
+    {
+      "path": "kaggle/kaggle_g3c_official.py",
+      "sha256": "ee2669793112adea5e0d6cec4af2c5edf2f73bfcaee33c49ca9ba59663c00f8c",
+      "size": 4442
+    },
+    {
+      "path": "kaggle/requirements-g3c.txt",
+      "sha256": "cb22478720cc1e57ad0c60c5b0efe6dd60d350850274feab75c1cfde0e378ea3",
+      "size": 75
+    },
+    {
+      "path": "kaggle/vifinqa-g3c-official-embedding.ipynb",
+      "sha256": "7e6de9fbbf1558f9b43a3bd285ac306cd37938145e64f715f66cfb64972ff563",
+      "size": 3951
+    },
+    {
+      "path": "kaggle/vifinqa-g3c-official-rerank-a.ipynb",
+      "sha256": "90ecb1b22956c8c63ec9ac52fad7d6bba8144c1cf048fbbfe6000b0ceef4b60a",
+      "size": 4076
+    },
+    {
+      "path": "kaggle/vifinqa-g3c-official-rerank-b.ipynb",
+      "sha256": "695e20ced8e2a064d4c1338719dab203a3daf2eeb6fc8df01968e4938be867ac",
+      "size": 4050
+    },
+    {
+      "path": "scripts/81_g3c_closeout_pb.py",
+      "sha256": "65d20622da206dec1abf91fbe86d98235043a350d569a31124adc1887ac8c98b",
+      "size": 2612
+    },
+    {
+      "path": "scripts/82_g3c_build_exact_canary.py",
+      "sha256": "49d4a951d9b95a57bbabf8b1bacc39d0c1bfdaf992e6a438b17424a692c3ddda",
+      "size": 1768
+    },
+    {
+      "path": "scripts/83_g3c_freeze_official_protocol.py",
+      "sha256": "c9ea3aed984c6d55db4083ebb596b189caceae24e2a4a8af28b6cac83a9b6943",
+      "size": 2357
+    },
+    {
+      "path": "scripts/84_g3c_build_official_payload.py",
+      "sha256": "e485d89471e5486ae22262f1d3d6043e9073e03de7a71df833c96f583ef847b8",
+      "size": 3376
+    },
+    {
+      "path": "scripts/85_g3c_finalize_official.py",
+      "sha256": "1a0e7ecc76276ffe97eacc8eca8892acd39aa7ee9c801190918a1d7a397c5144",
+      "size": 2468
+    },
+    {
+      "path": "vifinqa/g3c_official/__init__.py",
+      "sha256": "c22c629b32cce1848c5178a4628ed67510ac53201a15e8cca0777eba5f01d967",
+      "size": 419
+    },
+    {
+      "path": "vifinqa/g3c_official/canary.py",
+      "sha256": "a0920da33b3a57666de514dbff334e71eef2fd1744055c0dec0696322a781f96",
+      "size": 17514
+    },
+    {
+      "path": "vifinqa/g3c_official/closeout.py",
+      "sha256": "42fe732cbf2ed9814c514b7950edda6220fa8c2272241ae43226b653ec534529",
+      "size": 9784
+    },
+    {
+      "path": "vifinqa/g3c_official/common.py",
+      "sha256": "347ac4315887a9731b4d24bbbcfbd672a72fb1625175164baf5a1b40da0f3f50",
+      "size": 4398
+    },
+    {
+      "path": "vifinqa/g3c_official/execution.py",
+      "sha256": "106acdb7f6d18618bc2f1fdd270c7df415a7ac806732c5e61e91a8822d64ba14",
+      "size": 46110
+    },
+    {
+      "path": "vifinqa/g3c_official/finalize.py",
+      "sha256": "1b80965ea32b978e7a4fed65dc6ddb994a16b2d7dd0d05998cdbc0b3c96caeb0",
+      "size": 11516
+    },
+    {
+      "path": "vifinqa/g3c_official/payload.py",
+      "sha256": "338efed9b3456b63f5825f5f956ae7ce6bc37152176ed46f503fac8c1bad58cd",
+      "size": 18582
+    },
+    {
+      "path": "vifinqa/g3c_official/protocol.py",
+      "sha256": "f4c9c40ec92a74422ba47a7877a589781507bb92cffc9b78319be96ea51fac1a",
+      "size": 8018
+    },
+    {
+      "path": "vifinqa/g3c_official/workload.py",
+      "sha256": "07a3208d882d281d140daa3e9e48b80a5bf5db335289522e723a04e510655a89",
+      "size": 17403
+    }
+  ],
+  "behavior_tree_sha256": "cb5634e212ee067ae4fec6851bc4669b12497b0402b62eac8179f085a10720e2",
+  "candidate_fingerprint": "1cb02ad5e436d95efe18db0f7d8bbcb2e47cb6f65291892b4a78002d32f8336a",
+  "candidate_freeze_sha256": "ee81d8943de38cf0abe99c653edba9029ae482925f0b1cd4d6ae74218a72fae2",
+  "equivalence_contract": {
+    "approximate_search_or_quantization": false,
+    "embedding_partition_unit": "whole_frozen_batch",
+    "exact_numeric_canary_required_on_each_gpu_and_model": true,
+    "fallback_report_search_or_fuzzy_match": false,
+    "model_tokenizer_instruction_config_unchanged": true,
+    "precision_attention_lengths_batches_unchanged": true,
+    "prior_qwen_vector_or_score_cache_seeded": false,
+    "rank_and_submission_projection_must_match_frozen_replay": true,
+    "reranker_partition_unit": "whole_question",
+    "selected_stage": "R4",
+    "supported_questions_use_exact_frozen_r4": true,
+    "undefined_missing_report_questions_use_r0_passthrough": true
+  },
+  "execution_config_sha256": "83e4db5f413217c2dff2176ac5a497946ceeee691d7cca80a03925c4d3f09d72",
+  "frozen_on": "2026-08-24",
+  "numeric_canary_fingerprint": "a9f4acdf8a3437e5115be39e1ef79b86c0f8db67f553d77856bdb6f64cb5c130",
+  "numeric_canary_manifest_sha256": "c47f8715e7238f89a9600804224f9c23cc1a8224053a0f9defee679e63b91ac3",
+  "numeric_canary_vectors_sha256": "792fb20db5ebf782df77c7253d9343505ea51b861366d3cd343d82fa5eb7cadc",
+  "official_protocol_fingerprint": "958ba9d2dd4c979d54635f251415211b75316bc927b0e145a39e7c4270faf51f",
+  "pb_closeout_fingerprint": "1c76675392369ab1d3133e54aeed38813492426f89ea1f627e0c21e482f0759d",
+  "pb_closeout_sha256": "e15dd60778d53687dd9886385e891758c94decaaf50b31b5989dea55cdb0a4fb",
+  "public_bias_guard": {
+    "official_gold_in_payload": false,
+    "public_score_used": false,
+    "question_specific_repairs": false,
+    "selection_or_threshold_tuning": false
+  },
+  "purpose": "post_freeze_crash_schema_finiteness_audit_only",
+  "registry_fingerprint": "4c1026ba69ffbd2f8fd6a73d807ac20221cb2e29e562bb9c25eaea42345321de",
+  "schema_version": "g3c_official_protocol_freeze_v1",
+  "source_config_sha256": "a691497b9581136de2dc20adedca06868a0e791aee5c8fb9b5c3f657f5b9ded1",
+  "source_g3c_behavior_tree_sha256": "f1f99c3189393ccd092784b3cd756b6989fe928335f1693255c7da831506e0b5",
+  "source_g3c_protocol_fingerprint": "af86c8ffc276cc0a92ceeb3cc0ddc3a7eeaa7b6a1e4430dc2cade8ac4c9621c5",
+  "status": "frozen_before_official_1012_gpu_execution"
+}

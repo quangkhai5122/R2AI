@@ -191,6 +191,31 @@ unchanged. The G3C retrieval exit criterion is met. See
 `G3C_SESSION_PROMOTION_RESULTS_2026-08-24.md` for the bounded claim and next
 decision.
 
+## P-B closeout and official engineering implementation - 2026-08-24
+
+P-B/R4 is now formally closed and registered. The 1,012-question official
+execution protocol was frozen only after a label-blind workload audit and an
+exact-equivalence review. The implementation uses both T4s without changing
+frozen model calls: complete embedding batches are assigned across GPUs and
+complete questions are assigned across four reranker shards.
+
+The workload is split across three Kaggle runs because a conservative
+Promotion-based projection places a monolithic two-T4 run at 12.280 hours.
+All three official phases completed in 12.281 sequential hours and passed the
+exact canaries and strict local finalizer. The frozen official R4 SHA-256 is
+`1281af9a737fd235e61b275c4ffebe34624d4790be6c043c81ca88d8552132d5`.
+
+Fourteen official questions have an atomic leaf with no exact report, a case
+for which the original frozen runner has no R4 output. They are preregistered
+as explicit R0 passthroughs with no fallback search. Exact frozen R4 applies to
+the other 998 questions. This is an engineering totalization, not a tuned
+retrieval change.
+
+See `G3C_OFFICIAL_1012_RUNBOOK.md` and
+`G3C_SESSION_PB_CLOSEOUT_OFFICIAL_1012_2026-08-24.md`. The measured completion
+and B1-fixed public diagnostic are recorded in
+`G3C_SESSION_OFFICIAL_RESULTS_PUBLIC_DIAGNOSTIC_2026-08-24.md`.
+
 ## Implementation review and controlled amendments - 2026-08-23
 
 Status at the 2026-08-23 implementation freeze: implemented and locally

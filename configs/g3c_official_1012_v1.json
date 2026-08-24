@@ -1,0 +1,44 @@
+{
+  "schema_version": "g3c_official_execution_v1",
+  "source_config_sha256": "a691497b9581136de2dc20adedca06868a0e791aee5c8fb9b5c3f657f5b9ded1",
+  "candidate_fingerprint": "1cb02ad5e436d95efe18db0f7d8bbcb2e47cb6f65291892b4a78002d32f8336a",
+  "selected_stage": "R4",
+  "question_count": 1012,
+  "gpu_workers": 2,
+  "rerank_shards": 4,
+  "embedding_partition": "whole_frozen_batches_greedy_lpt_v1",
+  "rerank_partition": "whole_questions_greedy_lpt_v1",
+  "embedding_checkpoint_batches": 256,
+  "reranker_checkpoint_questions": 4,
+  "cache_seed_policy": "empty_official_cache_no_dev_or_promotion_vectors",
+  "unsupported_question_policy": {
+    "trigger": "any_atomic_leaf_has_no_exact_report",
+    "action": "r0_passthrough_with_explicit_provenance",
+    "allow_report_fallback_search": false,
+    "allow_fuzzy_report_match": false,
+    "preserve_r0_candidate_order": true
+  },
+  "equivalence_policy": {
+    "preserve_model_revisions": true,
+    "preserve_tokenizer_revisions": true,
+    "preserve_instructions": true,
+    "preserve_precision": true,
+    "preserve_attention_implementation": true,
+    "preserve_max_lengths": true,
+    "preserve_batch_sizes": true,
+    "split_embedding_batches": false,
+    "split_reranker_question_calls": false,
+    "allow_approximate_search": false,
+    "allow_quantization": false,
+    "allow_cache_seed_from_prior_runs": false,
+    "require_exact_gpu_canary": true,
+    "require_rank_and_submission_projection_equivalence": true
+  },
+  "public_question_policy": {
+    "purpose": "post_freeze_engineering_audit_only",
+    "gold_available_to_pipeline": false,
+    "score_based_selection_allowed": false,
+    "question_specific_patches_allowed": false,
+    "threshold_changes_allowed": false
+  }
+}

@@ -5,7 +5,10 @@ Status date: 2026-08-24
 Current status: G3C dev and one-shot promotion completed on 2026-08-24. R4
 passed the dev gate and improved every retrieval metric on the frozen
 `primary_locked + hard` promotion set. Answer/execution accuracy was unchanged.
-The promotion evaluator is consumed and must never be rerun.
+The promotion evaluator is consumed and must never be rerun. P-B closeout, all
+three exact two-T4 official phases, and the strict 1,012-question local audit
+are complete. A B1-fixed public retrieval diagnostic is built and validated;
+it is not the canonical private P-B artifact and cannot select or retune R4.
 
 The first Kaggle attempt stopped in cell 2 before any Qwen model load or
 retrieval inference. Kaggle consumed dataset-metadata.json as an upload control
@@ -24,6 +27,16 @@ Measured dev analysis and the exact claim boundary are recorded in:
 Measured promotion analysis and the next-stage decision are recorded in:
 
     docs/g3c_qwen_retrieval/G3C_SESSION_PROMOTION_RESULTS_2026-08-24.md
+
+Official completion and the public diagnostic handoff are recorded in:
+
+    docs/g3c_qwen_retrieval/G3C_SESSION_OFFICIAL_RESULTS_PUBLIC_DIAGNOSTIC_2026-08-24.md
+
+The active official execution instructions are separate because they use a
+three-phase two-T4 runtime:
+
+    docs/g3c_qwen_retrieval/G3C_OFFICIAL_1012_RUNBOOK.md
+    docs/g3c_qwen_retrieval/G3C_SESSION_PB_CLOSEOUT_OFFICIAL_1012_2026-08-24.md
 
 ## 1. Scientific boundary
 
@@ -431,7 +444,8 @@ Completed evidence:
 - packaged three-question fake R0-R4 smoke;
 - six stage artifacts, zero hard violations;
 - B0 codegen/submission handoff smoke;
-- 378 repository tests and notebook code-cell compilation;
+- current repository suite: 389 tests passed; notebook code-cell compilation
+  remains covered by the frozen implementation checks;
 - real Qwen dev result import: 54 questions x 6 stages, exact hashes, zero hard
   violations;
 - all dev retrieval/submission/answer evaluations;
@@ -440,14 +454,79 @@ Completed evidence:
 - promotion GPU import: exact candidate/protocol/payload binding, zero hard
   violations;
 - one-shot promotion evaluation: completed with integrity passed;
-- G3C exit criterion: met for retrieval, not for answer improvement.
+- G3C exit criterion: met for retrieval, not for answer improvement;
+- real Qwen official embeddings: 89,862 vectors, exact canary passed on both
+  T4s;
+- real Qwen official reranking: four complete shards, exact canary passed,
+  1,012 aligned rows;
+- final official audit: 998 exact R4, 14 declared R0 passthroughs, zero hard
+  violations, zero non-finite values;
+- B1-fixed public retrieval diagnostic: built, replayed and independently
+  validated.
 
 Pending:
 
-- any official 1,012-record post-freeze crash/invariant run.
+- Dashboard aggregate metrics for the single public diagnostic submission;
+- G3D typed planning/cell grounding on a new unopened source-derived holdout.
 
 R4 improves retrieval over R0 on both the 54-question dev set and the frozen
 55-question same-corpus/different-question promotion set. This is bounded
 generalization evidence within G3B, not proof about the private distribution.
 Do not describe R4 as improving answer accuracy, and do not reuse the opened
 promotion set to select or tune G3D.
+
+## 17. P-B closeout and official execution handoff
+
+P-B is formally closed at:
+
+    experiments/g3c_qwen_retrieval_v1/pb_r4_closeout.json
+    experiments/g3c_qwen_retrieval_v1/registry.json
+
+The active official payload is:
+
+    artifacts/g3c_v1/official_payload
+
+Official protocol fingerprint:
+
+    958ba9d2dd4c979d54635f251415211b75316bc927b0e145a39e7c4270faf51f
+
+Official payload fingerprint:
+
+    4428637d718fddbd99db7d034337af66743a7dca23026b2da3a04af9dc55f227
+
+The workload uses exact frozen R4 for 998 questions. Fourteen questions fail
+the frozen missing-exact-report precondition and are declared R0 passthroughs;
+there is no fuzzy report recovery. Run three notebooks in order:
+
+    kaggle/vifinqa-g3c-official-embedding.ipynb
+    kaggle/vifinqa-g3c-official-rerank-a.ipynb
+    kaggle/vifinqa-g3c-official-rerank-b.ipynb
+
+All commands, expected paths, runtime projections, equivalence proof boundary,
+resume rules and local finalization are in `G3C_OFFICIAL_1012_RUNBOOK.md`.
+
+## 18. Public retrieval diagnostic handoff
+
+The diagnostic deliberately fixes the already-scored B1 answer layer so that
+the Dashboard comparison changes only retrieval fields. Build and validate:
+
+    python scripts/86_g3c_build_public_retrieval_diagnostic.py build
+    python scripts/86_g3c_build_public_retrieval_diagnostic.py validate
+
+The validated upload file is:
+
+    artifacts/g3c_v1/official_submission_b1fixed_r4_v1/submission.zip
+
+SHA-256:
+
+    a20257967fa0dbdf1659978ef901489eb0bd7ae6d1d03fbc1ccf55667164c319
+
+Do not upload either directory whose name ends in `failed_windows_newline` or
+`failed_windows_crlf`; they preserve the cross-platform CSV incident before LF
+serialization was made explicit. The final ZIP has 1,522 members. All 1,521
+data CSVs are byte-identical to B1 and only `results.json` differs.
+
+Expected invariant: Answer and Execution Accuracy both remain `0.1897`. If
+either changes, reject the comparison. Read only aggregate DOCS/TABLES metrics;
+do not inspect public IDs, change R4, select a private candidate, or redirect
+G3D from this score.
