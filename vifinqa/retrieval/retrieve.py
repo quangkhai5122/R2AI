@@ -267,6 +267,10 @@ def _table_requirement_score(meta: dict, requirement: dict) -> float | None:
         return value
 
     metric_key = str(requirement.get("metric_key") or "")
+    if metric_key == "operating_lease_commitments":
+        value = _operating_lease_schedule_score(meta, requirement)
+        _REQUIREMENT_SCORE_CACHE[cache_key] = value
+        return value
     if not metric_context_matches(metric_key, str(meta.get("context") or "")):
         _REQUIREMENT_SCORE_CACHE[cache_key] = None
         return None
@@ -295,6 +299,50 @@ def _table_requirement_score(meta: dict, requirement: dict) -> float | None:
     if len(_REQUIREMENT_SCORE_CACHE) > _REQUIREMENT_SCORE_CACHE_SIZE:
         _REQUIREMENT_SCORE_CACHE.popitem(last=False)
     return value
+
+
+def _operating_lease_schedule_score(
+        meta: dict, requirement: dict) -> float | None:
+    """Recognize a maturity schedule even though its total row is generic."""
+    context = norm(str(meta.get("context") or ""))
+    grid = norm(str(meta.get("grid_json") or ""))
+    blob = f"{context} {grid}"
+    short = any(value in blob for value in (
+        "den 1 nam", "duoi 1 nam", "duoi mot nam", "1 nam tro xuong",
+        "01 nam tro xuong",
+    ))
+    medium = any(value in blob for value in (
+        "tren 1 den 5 nam", "tren 1 nam den 5 nam", "tren 1 5 nam",
+        "tu 1 den 5 nam", "tu 1 5 nam", "tu mot den nam nam",
+    ))
+    if not short or not medium or "thue" not in context:
+        return None
+
+    variants = [norm(value) for value in requirement.get("metric_variants") or []]
+    metric_label = norm(str(requirement.get("metric_label") or ""))
+    try:
+        source_variants = variants[:variants.index(metric_label)]
+    except ValueError:
+        source_variants = variants[:1]
+    asked = " ".join(source_variants or variants[:1])
+    wants_receivable = any(value in asked for value in (
+        "cho thue", "phai thu", "phai nhan", "thu duoc",
+    ))
+    wants_payable = any(value in asked for value in (
+        "phai tra", "ben di thue",
+    ))
+    context_receivable = any(value in context for value in (
+        "cho thue", "ben cho thue", "phai thu", "thu duoc",
+    ))
+    context_payable = any(value in context for value in (
+        "ben di thue", "phai tra", "cong ty thue", "tap doan thue",
+        "nhom cong ty thue",
+    ))
+    if wants_receivable and not context_receivable:
+        return None
+    if wants_payable and not context_payable:
+        return None
+    return 96.0
 
 
 def _apply_quota(cands: list[dict], route, depth: int) -> list[dict]:

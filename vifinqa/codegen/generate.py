@@ -82,7 +82,9 @@ class QuestionBundle:
                 "table_pos": int(c["table_pos"]), "page": c.get("page"),
                 "unit_scale": us, "unit_source": m.get("unit_source", "none"),
                 "report_year": int(m["year"]),
-                "context": str(m.get("context") or ""), "csv_text": csv_text,
+                "context": str(m.get("context") or ""),
+                "grid_json": str(m.get("grid_json") or "[]"),
+                "csv_text": csv_text,
             })
             self.dfs[var] = df_roundtrip(csv_text)
 

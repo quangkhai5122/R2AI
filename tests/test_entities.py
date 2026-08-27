@@ -26,9 +26,20 @@ def stock_map(tmp_path: Path) -> StockMap:
             ("ASM", "CTCP Tập đoàn Sao Mai"),
             ("OGC", "CTCP Tập đoàn Đại Dương"),
             ("QNS", "CTCP Đường Quảng Ngãi"),
+            ("BSR", "CTCP Lọc hóa Dầu Bình Sơn"),
+            ("PLX", "Tập đoàn Xăng dầu Việt Nam"),
+            ("PVT", "Tổng CTCP Vận tải Dầu khí"),
+            ("GEX", "CTCP Tập đoàn GELEX"),
+            ("GEE", "CTCP Điện lực GELEX"),
+            ("HHV", "CTCP Đầu tư Hạ tầng Giao thông Đèo Cả"),
+            ("NKG", "Cong ty Co phan Thep Nam Kim"),
+            ("HPG", "Cong ty Co phan Tap doan Hoa Phat"),
+            ("DPM", "Tong Cong ty Phan bon va Hoa chat Dau khi - CTCP"),
+            ("HT1", "Cong ty Co phan Xi mang Vicem Ha Tien"),
             ("HAG", "Cong ty Co phan Hoang Anh Gia Lai"),
             ("HNG", "Cong ty Co phan Nong nghiep Quoc te Hoang Anh Gia Lai"),
             ("DCM", "Cong ty Co phan Phan bon Dau khi Ca Mau"),
+            ("PRT", "Tong Cong ty San xuat Xuat nhap khau Binh Duong - CTCP"),
             ("DXS", "Cong ty Co phan Dich vu Bat dong san Dat Xanh"),
             ("SAM", "Cong ty Co phan SAM Holdings"),
         ],
@@ -45,6 +56,42 @@ def test_finds_multiple_company_names_in_mention_order(stock_map):
     )
     assert parsed.tickers == ["VNM", "GAS"]
     assert parsed.ticker_source == "explicit_name"
+
+
+def test_paraphrased_tan_binh_name_maps_to_prt(stock_map):
+    parsed = parse_question(
+        "Trong số CTCP Sản xuất Kinh doanh Xuất nhập khẩu Dịch vụ và Đầu tư "
+        "Tân Bình và DCM, doanh thu năm 2022 là bao nhiêu?",
+        stock_map,
+    )
+
+    assert parsed.tickers == ["PRT", "DCM"]
+
+
+def test_short_nam_kim_name_maps_to_nkg(stock_map):
+    parsed = parse_question(
+        "Trong nhóm Hoà Phát, Hoa Sen và Nam Kim năm 2024, công ty nào có "
+        "biên lợi nhuận cao nhất?",
+        stock_map,
+    )
+
+    assert "NKG" in parsed.tickers
+
+
+def test_scenario_trade_names_map_to_distinct_tickers(stock_map):
+    oil = parse_question(
+        "Trong các doanh nghiệp Bình Sơn, Tập đoàn Xăng dầu - PLX và PVTrans "
+        "năm 2024, hệ số nào cao nhất?",
+        stock_map,
+    )
+    gelex = parse_question(
+        "Trong nhóm Điện lực Gelex, Tập đoàn Gelex, HHV và SAM năm 2023, "
+        "biên lợi nhuận nào cao nhất?",
+        stock_map,
+    )
+
+    assert oil.tickers == ["BSR", "PLX", "PVT"]
+    assert gelex.tickers[:2] == ["GEE", "GEX"]
 
 
 def test_finds_lowercase_tickers(stock_map):
@@ -201,6 +248,34 @@ def test_answer_tail_turn_unit_overrides_percent_filter_metric(stock_map):
     )
     assert parsed.output_type == "ratio"
     assert parsed.unit_name == "vòng"
+
+
+def test_fertilizer_trade_names_do_not_fuzzy_match_phu_nhuan(stock_map):
+    parsed = parse_question(
+        "Trong hai doanh nghiệp Đạm Phú Mỹ và Đạm Cà Mau, doanh nghiệp nào "
+        "có biên lợi nhuận gộp cao hơn?",
+        stock_map,
+    )
+
+    assert parsed.tickers == ["DPM", "DCM"]
+
+
+def test_vicem_ha_tien_trade_name_maps_to_ht1(stock_map):
+    parsed = parse_question(
+        "So sánh Hòa Phát, Đạm Cà Mau và Vicem Hà Tiên năm 2024.",
+        stock_map,
+    )
+
+    assert parsed.tickers == ["HPG", "DCM", "HT1"]
+
+
+def test_short_dau_khi_ca_mau_name_maps_to_dcm(stock_map):
+    parsed = parse_question(
+        "Trong nhóm Dầu Khí Cà Mau, DPM, GVR, Hòa Phát và Vicem Hà Tiên.",
+        stock_map,
+    )
+
+    assert parsed.tickers == ["DCM", "DPM", "HPG", "HT1"]
 
 
 @pytest.mark.parametrize(

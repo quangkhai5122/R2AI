@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..utils.viet_num import parse_vn_number, is_year_like
-from ..utils.viet_text import strip_diacritics
+from ..utils.viet_text import norm, strip_diacritics
 from .html_tables import iter_tables, parse_grid
 
 # regex on diacritic-stripped lowercase text
@@ -154,6 +154,14 @@ def extract_cells(rec: TableRec, max_rows: int = 400) -> list[dict]:
     if not grid:
         return []
     header = grid[0] if grid else []
+    matrix_text = norm(" ".join(str(cell) for row in grid for cell in row))
+    note_value_matrix = (
+        ("quyen su dung dat" in matrix_text and "gia tri con lai" in matrix_text)
+        or all(value in matrix_text for value in (
+            "no duoi tieu chuan", "no nghi ngo", "no co kha nang mat von"))
+        or (("chuc danh" in matrix_text or "chuc vu" in matrix_text)
+            and "nam nay" in matrix_text and "tong cong" in matrix_text)
+    )
     out = []
     for r, row in enumerate(grid[:max_rows]):
         label_parts, row_code = [], ""
@@ -161,7 +169,9 @@ def extract_cells(rec: TableRec, max_rows: int = 400) -> list[dict]:
             v = parse_vn_number(cell)
             if v is None and cell.strip():
                 label_parts.append(cell.strip())
-            elif v is not None and not row_code and c <= 3 and _CODE_RE.match(cell.strip()):
+            elif (v is not None and not row_code and c <= 3
+                  and _CODE_RE.match(cell.strip())
+                  and not note_value_matrix):
                 if not is_year_like(v):
                     row_code = cell.strip()
         label = " ".join(label_parts)[:160]

@@ -28,7 +28,8 @@ _PCT_HINT = re.compile(r"%|\bty le\b|\bphan tram\b|\bti le\b|\bty trong\b")
 
 # output_type -> (low, high) plausible magnitude for a CORRECT answer
 PLAUSIBLE = {
-    "percent": (0.0, 1000.0),
+    # Returns, margins and growth rates can legitimately be negative.
+    "percent": (-1000.0, 1000.0),
     "percentage_point": (-500.0, 500.0),
     "ratio": (-1000.0, 1000.0),
     "year": (1990.0, 2035.0),

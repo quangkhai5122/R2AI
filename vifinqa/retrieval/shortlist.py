@@ -395,9 +395,12 @@ def _period_kind(col_name: str) -> str:
     cn = norm(str(col_name or ""))
     if not cn or cn == "nan":
         return "metadata"
-    if re.search(r"(?<!\d)(?:0?1)\s*/\s*(?:0?1)\s*/\s*20\d{2}(?!\d)", cn):
+    date_sep = r"(?:\s*[./-]\s*|\s+)"
+    if re.search(
+            rf"(?<!\d)(?:0?1){date_sep}(?:0?1){date_sep}20\d{{2}}(?!\d)",
+            cn):
         return "prior"
-    if re.search(r"(?<!\d)31\s*/\s*12\s*/\s*20\d{2}(?!\d)", cn):
+    if re.search(rf"(?<!\d)31{date_sep}12{date_sep}20\d{{2}}(?!\d)", cn):
         return "current"
     if any(marker in cn for marker in _PRIOR_PERIOD_HEADERS):
         return "prior"

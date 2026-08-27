@@ -1,10 +1,12 @@
 """Tests for the P1 additions: extractive metric, shortlist, decomposition,
 formula registry and answer-unit normalisation."""
+import json
 import unittest
 
 import pandas as pd
 
 from vifinqa.codegen.formulas import REGISTRY, describe_for_prompt, get
+from vifinqa.codegen.fact_resolver import resolve_requirement
 from vifinqa.codegen.units import (check_answer_unit, cell_is_already_percent,
                                    percent_from_cell)
 from vifinqa.retrieval.shortlist import (
@@ -112,6 +114,7 @@ class UnitTests(unittest.TestCase):
     def test_warns_on_ratio_shaped_percent_answer(self):
         self.assertIn("RATIO", check_answer_unit(0.9, "percent"))
         self.assertIsNone(check_answer_unit(90.0, "percent"))
+        self.assertIsNone(check_answer_unit(-11.0, "percent"))
 
     def test_year_and_count_ranges(self):
         self.assertIsNone(check_answer_unit(2023, "year"))
@@ -131,6 +134,46 @@ class ShortlistTests(unittest.TestCase):
         self.assertEqual(_period_kind("1/1/2024 VND"), "prior")
         self.assertEqual(_period_kind("01/01/2024 VND"), "prior")
         self.assertEqual(_period_kind("31/12/2024 VND"), "current")
+        self.assertEqual(_period_kind("01.01.2024 VND"), "prior")
+        self.assertEqual(_period_kind("31.12.2024 VND"), "current")
+
+    def test_exact_resolver_recovers_split_dotted_date_header(self):
+        rows = [
+            {"row": 2, "label": "TÀI SẢN DÀI HẠN", "code": "200",
+             "col": 3, "col_name": "Tại ngày", "value": 37.0,
+             "unit_scale": 1e9},
+            {"row": 2, "label": "TÀI SẢN DÀI HẠN", "code": "200",
+             "col": 4, "col_name": "Tại ngày", "value": 35.0,
+             "unit_scale": 1e9},
+        ]
+        grid = [
+            ["Mã số", "TÀI SẢN", "Thuyết minh", "Tại ngày", "Tại ngày"],
+            ["Mã số", "TÀI SẢN", "Thuyết minh", "31.12.2024 VND",
+             "01.01.2024 VND"],
+            ["200", "TÀI SẢN DÀI HẠN", "", "37", "35"],
+        ]
+        tables = [{
+            "var": "df1",
+            "report_id": "AAA_financial_statements_2024_consolidated",
+            "report_year": 2024,
+            "table_pos": 8,
+            "context": "Bảng cân đối kế toán hợp nhất",
+            "grid_json": json.dumps(grid, ensure_ascii=False),
+            "csv_text": pd.DataFrame(rows).to_csv(index=False),
+        }]
+        requirement = {
+            "ticker": "AAA", "year": 2024, "doc_type": "consolidated",
+            "metric_key": "long_term_assets", "metric_label": "tai san dai han",
+            "metric_variants": ["tai san dai han"],
+            "statement": "balance_sheet",
+        }
+
+        found = resolve_requirement(
+            requirement, tables, question="tai san dai han")
+
+        self.assertIsNotNone(found)
+        self.assertEqual(found.value, 37.0)
+        self.assertEqual(found.col, 3)
 
     def test_start_of_report_year_serves_as_prior_year_closing_balance(self):
         rows = [
@@ -227,6 +270,367 @@ class ShortlistTests(unittest.TestCase):
             tables, ["vay cac TCTD khac"], [2024],
             question="So du vay cac TCTD khac cuoi nam 2024")
         self.assertEqual(cands[0].label, "Vay cac TCTD khac")
+
+    def test_exact_resolver_accepts_same_code_value_continuation_rows(self):
+        rows = [
+            {"row": 1, "label": "Lợi nhuận sau thuế TNDN (mang sang trang sau)",
+             "code": "60", "col": 1, "col_name": "2024", "value": 12.0,
+             "unit_scale": 1e9},
+            {"row": 2, "label": "Lợi nhuận sau thuế TNDN (mang từ trang trước)",
+             "code": "60", "col": 1, "col_name": "2024", "value": 12.0,
+             "unit_scale": 1e9},
+        ]
+        tables = [{
+            "var": "df1",
+            "report_id": "AAA_financial_statements_2024_consolidated",
+            "report_year": 2024,
+            "table_pos": 3,
+            "context": "Báo cáo kết quả hoạt động kinh doanh",
+            "csv_text": pd.DataFrame(rows).to_csv(index=False),
+        }]
+        requirement = {
+            "ticker": "AAA", "year": 2024, "doc_type": "consolidated",
+            "metric_key": "net_profit", "metric_label": "loi nhuan sau thue",
+            "metric_variants": ["loi nhuan sau thue"],
+            "statement": "income_statement",
+        }
+
+        found = resolve_requirement(requirement, tables, question="loi nhuan sau thue")
+
+        self.assertIsNotNone(found)
+        self.assertEqual(float(found.code), 60.0)
+
+    def test_exact_resolver_prefers_vas_code_over_unnumbered_note_row(self):
+        rows = [
+            {"row": 1, "label": "Lợi nhuận thuần trong năm", "code": "",
+             "col": 1, "col_name": "Năm 2024", "value": 4.0,
+             "unit_scale": 1e9},
+            {"row": 2, "label": "Lợi nhuận sau thuế TNDN", "code": "60",
+             "col": 1, "col_name": "Năm 2024", "value": 60.0,
+             "unit_scale": 1e9},
+        ]
+        tables = [{
+            "var": "df1",
+            "report_id": "AAA_financial_statements_2024_consolidated",
+            "report_year": 2024,
+            "table_pos": 3,
+            "context": "Báo cáo kết quả hoạt động kinh doanh",
+            "csv_text": pd.DataFrame(rows).to_csv(index=False),
+        }]
+        requirement = {
+            "ticker": "AAA", "year": 2024, "doc_type": "consolidated",
+            "metric_key": "net_profit", "metric_label": "loi nhuan sau thue",
+            "metric_variants": ["loi nhuan sau thue", "loi nhuan thuan trong nam"],
+            "statement": "income_statement",
+        }
+
+        found = resolve_requirement(requirement, tables, question="loi nhuan sau thue")
+
+        self.assertIsNotNone(found)
+        self.assertEqual(float(found.code), 60.0)
+        self.assertEqual(found.value, 60.0)
+
+    def test_exact_resolver_reads_basic_eps_swallowed_as_row_code(self):
+        grid = [
+            ["", "Năm nay", "Năm trước"],
+            ["Lãi cơ bản trên cổ phiếu (VND/cổ phiếu)", "1.551", "1.532"],
+        ]
+        rows = [{
+            "row": 1,
+            "label": "Lãi cơ bản trên cổ phiếu (VND/cổ phiếu)",
+            "code": "1.551", "col": 2, "col_name": "Năm trước",
+            "value": 1532.0, "unit_scale": 1.0,
+        }]
+        tables = [{
+            "var": "df1",
+            "report_id": "AAA_financial_statements_2018_consolidated",
+            "report_year": 2018,
+            "table_pos": 49,
+            "context": "Báo cáo kết quả hoạt động kinh doanh hợp nhất",
+            "grid_json": json.dumps(grid, ensure_ascii=False),
+            "csv_text": pd.DataFrame(rows).to_csv(index=False),
+        }]
+        requirement = {
+            "ticker": "AAA", "year": 2018, "doc_type": "consolidated",
+            "metric_key": "basic_eps", "metric_label": "lai co ban tren co phieu",
+            "metric_variants": ["lai co ban tren co phieu"],
+            "statement": "income_statement",
+        }
+
+        found = resolve_requirement(
+            requirement, tables, question="lai co ban tren co phieu")
+
+        self.assertIsNotNone(found)
+        self.assertEqual(found.value, 1551.0)
+        self.assertEqual(found.value_column, "code")
+        self.assertIn("'code'", found.expr())
+
+    def test_exact_resolver_recovers_shifted_vas_code_from_raw_grid(self):
+        grid = [
+            ["Chỉ tiêu", "Chỉ tiêu", "Mã số", "Thuyết minh",
+             "Năm 2024", "Năm 2023"],
+            ["1", "Doanh thu bán hàng và cung cấp dịch vụ", "01", "",
+             "120", "100"],
+            ["3", "Doanh thu thuần bán hàng và cung cấp dịch vụ", "10", "",
+             "110", "90"],
+        ]
+        rows = [
+            {"row": 2, "label": "Doanh thu thuần bán hàng và cung cấp dịch vụ",
+             "code": "3", "col": 2, "col_name": "Mã số", "value": 10.0,
+             "unit_scale": 1e9},
+            {"row": 2, "label": "Doanh thu thuần bán hàng và cung cấp dịch vụ",
+             "code": "3", "col": 4, "col_name": "Năm 2024", "value": 110.0,
+             "unit_scale": 1e9},
+            {"row": 2, "label": "Doanh thu thuần bán hàng và cung cấp dịch vụ",
+             "code": "3", "col": 5, "col_name": "Năm 2023", "value": 90.0,
+             "unit_scale": 1e9},
+        ]
+        tables = [{
+            "var": "df1",
+            "report_id": "AAA_financial_statements_2024_consolidated",
+            "report_year": 2024,
+            "table_pos": 5,
+            "context": "OCR header unavailable",
+            "grid_json": json.dumps(grid, ensure_ascii=False),
+            "csv_text": pd.DataFrame(rows).to_csv(index=False),
+        }]
+        requirement = {
+            "ticker": "AAA", "year": 2024, "doc_type": "consolidated",
+            "metric_key": "net_revenue", "metric_label": "doanh thu thuan",
+            "metric_variants": ["doanh thu thuan"],
+            "statement": "income_statement",
+        }
+
+        found = resolve_requirement(
+            requirement, tables, question="doanh thu thuan")
+
+        self.assertIsNotNone(found)
+        self.assertEqual(found.code, "10")
+        self.assertEqual(found.col, 4)
+        self.assertEqual(found.value, 110.0)
+
+    def test_exact_resolver_rejects_explicit_prior_year_with_unit_prefix(self):
+        grid = [
+            ["Chỉ tiêu", "Mã số", "Thuyết minh", "Năm 2024",
+             "Đơn vị tính: VND Năm 2023"],
+            ["Lưu chuyển tiền thuần từ hoạt động kinh doanh", "20", "",
+             "110", "90"],
+        ]
+        rows = [
+            {"row": 1, "label": "Lưu chuyển tiền thuần từ hoạt động kinh doanh",
+             "code": "20", "col": 3, "col_name": "Năm 2024", "value": 110.0,
+             "unit_scale": 1e9},
+            {"row": 1, "label": "Lưu chuyển tiền thuần từ hoạt động kinh doanh",
+             "code": "20", "col": 4,
+             "col_name": "Đơn vị tính: VND Năm 2023", "value": 90.0,
+             "unit_scale": 1e9},
+        ]
+        tables = [{
+            "var": "df1",
+            "report_id": "AAA_financial_statements_2024_consolidated",
+            "report_year": 2024,
+            "table_pos": 6,
+            "context": "OCR header unavailable",
+            "grid_json": json.dumps(grid, ensure_ascii=False),
+            "csv_text": pd.DataFrame(rows).to_csv(index=False),
+        }]
+        requirement = {
+            "ticker": "AAA", "year": 2024, "doc_type": "consolidated",
+            "metric_key": "cfo",
+            "metric_label": "luu chuyen tien thuan tu hoat dong kinh doanh",
+            "metric_variants": ["luu chuyen tien thuan tu hoat dong kinh doanh"],
+            "statement": "cash_flow",
+        }
+
+        found = resolve_requirement(requirement, tables, question="cfo")
+
+        self.assertIsNotNone(found)
+        self.assertEqual(found.col, 3)
+        self.assertEqual(found.value, 110.0)
+
+    def test_exact_resolver_uses_generic_prior_column_from_following_filing(self):
+        rows = [
+            {"row": 1, "label": "VỐN CHỦ SỞ HỮU", "code": "400",
+             "col": 3, "col_name": "Số cuối năm", "value": 200.0,
+             "unit_scale": 1e9},
+            {"row": 1, "label": "VỐN CHỦ SỞ HỮU", "code": "400",
+             "col": 4, "col_name": "Số đầu năm", "value": 100.0,
+             "unit_scale": 1e9},
+        ]
+        tables = [{
+            "var": "df1",
+            "report_id": "AAA_financial_statements_2025_consolidated",
+            "report_year": 2025,
+            "table_pos": 7,
+            "context": "Bảng cân đối kế toán hợp nhất",
+            "grid_json": "[]",
+            "csv_text": pd.DataFrame(rows).to_csv(index=False),
+        }]
+        requirement = {
+            "ticker": "AAA", "year": 2024, "doc_type": "consolidated",
+            "metric_key": "equity", "metric_label": "von chu so huu",
+            "metric_variants": ["von chu so huu"],
+            "statement": "balance_sheet",
+        }
+
+        found = resolve_requirement(
+            requirement, tables, question="von chu so huu")
+
+        self.assertIsNotNone(found)
+        self.assertEqual(found.report_id,
+                         "AAA_financial_statements_2025_consolidated")
+        self.assertEqual(found.col, 4)
+        self.assertEqual(found.value, 100.0)
+
+    def test_exact_resolver_scans_vas_code_when_ocr_label_is_opaque(self):
+        rows = [
+            {"row": 1, "label": "A - (100=110+120+130+140+150)",
+             "code": "100", "col": 3, "col_name": "31/12/2024VND",
+             "value": 6280.0, "unit_scale": 1e9},
+            {"row": 1, "label": "A - (100=110+120+130+140+150)",
+             "code": "100", "col": 4, "col_name": "01/01/2024VND",
+             "value": 6451.0, "unit_scale": 1e9},
+        ]
+        tables = [{
+            "var": "df1",
+            "report_id": "HPX_financial_statements_2024_consolidated",
+            "report_year": 2024,
+            "table_pos": 4,
+            "context": "Bảng cân đối kế toán hợp nhất",
+            "csv_text": pd.DataFrame(rows).to_csv(index=False),
+        }]
+        requirement = {
+            "ticker": "HPX", "year": 2024, "doc_type": "consolidated",
+            "metric_key": "current_assets", "metric_label": "tai san ngan han",
+            "metric_variants": ["tai san ngan han"],
+            "statement": "balance_sheet",
+        }
+
+        found = resolve_requirement(
+            requirement, tables, question="tai san ngan han")
+
+        self.assertIsNotNone(found)
+        self.assertEqual(found.value, 6280.0)
+        self.assertEqual(found.col_name, "31/12/2024VND")
+
+    def test_exact_resolver_fails_closed_on_conflicting_vas_code_values(self):
+        rows = [
+            {"row": 1, "label": "A - (100=110+120+130+140+150)",
+             "code": "100", "col": 3, "col_name": "31/12/2024VND",
+             "value": 6280.0, "unit_scale": 1e9},
+            {"row": 2, "label": "Tài sản ngắn hạn", "code": "100",
+             "col": 3, "col_name": "31/12/2024VND",
+             "value": 6200.0, "unit_scale": 1e9},
+        ]
+        tables = [{
+            "var": "df1",
+            "report_id": "HPX_financial_statements_2024_consolidated",
+            "report_year": 2024,
+            "table_pos": 4,
+            "context": "Bảng cân đối kế toán hợp nhất",
+            "csv_text": pd.DataFrame(rows).to_csv(index=False),
+        }]
+        requirement = {
+            "ticker": "HPX", "year": 2024, "doc_type": "consolidated",
+            "metric_key": "current_assets", "metric_label": "tai san ngan han",
+            "metric_variants": ["tai san ngan han"],
+            "statement": "balance_sheet",
+        }
+
+        found = resolve_requirement(
+            requirement, tables, question="tai san ngan han")
+
+        self.assertIsNone(found)
+
+    def test_exact_resolver_uses_leftmost_generic_closing_header(self):
+        rows = [
+            {"row": 1, "label": "TÀI SẢN NGẮN HẠN", "code": "100",
+             "col": 3, "col_name": "Tại ngày 31 tháng 12 năm",
+             "value": 10202.0, "unit_scale": 1e9},
+            {"row": 1, "label": "TÀI SẢN NGẮN HẠN", "code": "100",
+             "col": 4, "col_name": "Tại ngày 31 tháng 12 năm",
+             "value": 9322.0, "unit_scale": 1e9},
+        ]
+        tables = [{
+            "var": "df1",
+            "report_id": "NKG_financial_statements_2024_consolidated",
+            "report_year": 2024,
+            "table_pos": 1,
+            "context": "Bảng cân đối kế toán hợp nhất",
+            "csv_text": pd.DataFrame(rows).to_csv(index=False),
+        }]
+        requirement = {
+            "ticker": "NKG", "year": 2024, "doc_type": "consolidated",
+            "metric_key": "current_assets", "metric_label": "tai san ngan han",
+            "metric_variants": ["tai san ngan han"],
+            "statement": "balance_sheet",
+        }
+
+        found = resolve_requirement(
+            requirement, tables, question="tai san ngan han")
+
+        self.assertIsNotNone(found)
+        self.assertEqual(found.value, 10202.0)
+        self.assertEqual(found.col, 3)
+
+    def test_exact_code_scan_rejects_row_number_masquerading_as_vas_code(self):
+        rows = [
+            {"row": 1, "label": "Doanh thu thuần", "code": "10",
+             "col": 3, "col_name": "Năm 2024", "value": 1615.0,
+             "unit_scale": 1e9},
+            {"row": 2, "label": "10. Chi phí quản lý doanh nghiệp",
+             "code": "10", "col": 3, "col_name": "Năm 2024",
+             "value": 102.0, "unit_scale": 1e9},
+        ]
+        tables = [{
+            "var": "df1",
+            "report_id": "HPX_financial_statements_2024_consolidated",
+            "report_year": 2024,
+            "table_pos": 6,
+            "context": "Báo cáo kết quả hoạt động kinh doanh hợp nhất",
+            "csv_text": pd.DataFrame(rows).to_csv(index=False),
+        }]
+        requirement = {
+            "ticker": "HPX", "year": 2024, "doc_type": "consolidated",
+            "metric_key": "net_revenue", "metric_label": "doanh thu thuan",
+            "metric_variants": ["doanh thu thuan"],
+            "statement": "income_statement",
+        }
+
+        found = resolve_requirement(
+            requirement, tables, question="doanh thu thuan")
+
+        self.assertIsNotNone(found)
+        self.assertEqual(found.value, 1615.0)
+        self.assertEqual(found.label, "Doanh thu thuần")
+
+    def test_exact_resolver_accepts_equal_inventory_totals_with_allowed_codes(self):
+        rows = [
+            {"row": 1, "label": "IV. Hàng tồn kho", "code": "140",
+             "col": 1, "col_name": "31/12/2024", "value": 50.0,
+             "unit_scale": 1e9},
+            {"row": 2, "label": "1. Hàng tồn kho", "code": "141",
+             "col": 1, "col_name": "31/12/2024", "value": 50.0,
+             "unit_scale": 1e9},
+        ]
+        tables = [{
+            "var": "df1",
+            "report_id": "AAA_financial_statements_2024_consolidated",
+            "report_year": 2024,
+            "table_pos": 3,
+            "context": "Bảng cân đối kế toán",
+            "csv_text": pd.DataFrame(rows).to_csv(index=False),
+        }]
+        requirement = {
+            "ticker": "AAA", "year": 2024, "doc_type": "consolidated",
+            "metric_key": "inventory", "metric_label": "hang ton kho",
+            "metric_variants": ["hang ton kho"], "statement": "balance_sheet",
+        }
+
+        found = resolve_requirement(requirement, tables, question="hang ton kho")
+
+        self.assertIsNotNone(found)
+        self.assertIn(float(found.code), {140.0, 141.0})
 
     def test_intangible_fixed_asset_child_beats_parent(self):
         rows = [

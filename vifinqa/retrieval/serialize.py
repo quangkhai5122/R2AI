@@ -13,7 +13,7 @@ import json
 import pandas as pd
 
 from ..utils.viet_num import parse_vn_number
-from ..utils.viet_text import tokens
+from ..utils.viet_text import norm, tokens
 
 TIDY_COLS = ["row", "label", "code", "col", "col_name", "value", "unit_scale"]
 
@@ -44,6 +44,34 @@ def tidy_rows_from_grid(grid: list[list[str]], unit_scale: float | None,
     if not grid:
         return []
     header = grid[0]
+    code_columns = {
+        c for row in grid[:3] for c, cell in enumerate(row)
+        if "ma so" in norm(cell) or norm(cell) in {"code", "ma"}
+    }
+    header_text = norm(" ".join(str(cell) for row in grid[:2] for cell in row))
+    voting_rate_matrix = (
+        "ty le bieu quyet" in header_text
+        or "ty le so huu va bieu quyet" in header_text
+    )
+    annual_value_matrix = (
+        not code_columns and len(header) >= 3 and not norm(header[0])
+        and all(norm(cell).startswith("nam 20") for cell in header[1:] if cell)
+    )
+    matrix_text = norm(" ".join(str(cell) for row in grid for cell in row))
+    note_value_matrix = (
+        ("quyen su dung dat" in matrix_text and "gia tri con lai" in matrix_text)
+        or all(value in matrix_text for value in (
+            "no duoi tieu chuan", "no nghi ngo", "no co kha nang mat von"))
+        or (("chuc danh" in matrix_text or "chuc vu" in matrix_text)
+            and "nam nay" in matrix_text and "tong cong" in matrix_text)
+        or all(value in matrix_text for value in (
+            "chung chi tien gui", "duoi 12 thang",
+            "tu 12 thang den duoi 5 nam"))
+        or ("ngoai te" in matrix_text and "usd" in matrix_text
+            and "eur" in matrix_text)
+        or all(value in matrix_text for value in (
+            "usd", "eur", "jpy", "cny", "cad", "aud"))
+    )
     # NaN-safe (parquet stores None as NaN, and NaN is truthy)
     us = 1.0
     if unit_scale is not None and unit_scale == unit_scale and unit_scale:
@@ -57,7 +85,13 @@ def tidy_rows_from_grid(grid: list[list[str]], unit_scale: float | None,
             v = parse_vn_number(cell)
             if v is None and cell.strip():
                 label_parts.append(cell.strip())
-            elif v is not None and not row_code and c <= 3 and _CODE_RE.match(cell.strip()):
+            elif (v is not None and not row_code and c <= 3
+                  and _CODE_RE.match(cell.strip())
+                  and not note_value_matrix
+                  and (not voting_rate_matrix or c in code_columns)
+                  and (not annual_value_matrix or c in code_columns)):
+                # Preserve the legacy code heuristic everywhere except voting
+                # matrices, where rates such as 100 live in the first columns.
                 if not is_year_like(v):
                     row_code = cell.strip()
         label = " ".join(label_parts)[:160]
