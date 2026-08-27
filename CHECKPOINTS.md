@@ -1576,8 +1576,8 @@ Leaderboard evaluation returned `TABLES_F2MACRO=0.5510`,
 
 ## Candidate - grid-backed exact cohort resolver v22 audited5
 
-- Date: 2026-08-26
-- Status: locally audited; waiting for leaderboard
+- Date: 2026-08-27
+- Status: leaderboard confirmed
 - Base checkpoint: V21 leaderboard execution `0.4150`
 - Audited fill-only IDs: `388, 442, 443, 446, 466`
 - Remaining failed IDs: `424, 425, 426, 464, 497, 510, 538, 805, 907, 950, 995`
@@ -1872,3 +1872,12 @@ are aggregate supplier prepayments. The accepted values are:
 The merge changes exactly three rows and preserves all other 1,009 V27 rows.
 All 401 tests pass; all 1,012 expressions compile and replay, and the ZIP
 contains 2,092 verified CSV files. No Qwen rerun is required.
+
+Leaderboard evaluation returned `TABLES_F2MACRO=0.5530`,
+`DOCS_F2MACRO=0.9420`, `TABLES_PRECISION=0.3621`,
+`TABLES_RECALL=0.7480`, `DOCS_PRECISION=0.9494`,
+`DOCS_RECALL=0.9457`, and `EXECUTION_ACCURACY=0.4644`. Execution improved by
+`0.0019` over V27, approximately one additional correct answer. V28 is the new
+checkpoint, but direct growth should not be broadened without labeled evidence:
+three audited replacements yielded only one net correct answer. The next
+isolated challenger cohort is direct ratio.

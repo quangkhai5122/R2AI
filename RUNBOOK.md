@@ -3,8 +3,8 @@
 > **File này là nguồn sự thật duy nhất về LỆNH CHẠY.** Mỗi khi pipeline đổi,
 > ghi đè trực tiếp vào đây (đừng tạo file mới) để không bị lạc phiên bản.
 >
-> Cập nhật lần cuối: **2026-08-26** — leaderboard xác nhận exact average v27
-> ở execution 0.4625; exact growth v28 đang chờ nộp.
+> Cập nhật lần cuối: **2026-08-27** — leaderboard xác nhận exact growth v28
+> ở execution 0.4644; direct-ratio challenger là batch tiếp theo.
 
 ---
 
@@ -17,11 +17,11 @@
 | `TABLE_POS_MODE` | `line` (BTC xác nhận: vị trí = **số dòng** của `<table>`) |
 | `SUBMISSION_K` | 5 |
 | Retrieval chuẩn hiện tại | `artifacts/retrieval_v21_failed21_probe_depth112_w010.jsonl` |
-| Rule candidate hiện tại | exact direct-growth challenger v28 |
-| Điểm tốt nhất đã nộp | TABLES_F2 .5530 / DOCS_F2 .9420 / ANSWER .4625 / EXEC .4625 |
-| Checkpoint codegen | `artifacts/codegen_tranhuy_04565_plus_exact_average_v27_audited8_w010.jsonl` |
-| Checkpoint submission | `artifacts/submission_tranhuy_04565_plus_exact_average_v27_audited8_w010/submission.zip` |
-| Candidate chờ nộp | `artifacts/submission_tranhuy_04625_plus_exact_growth_v28_audited3_w010/submission.zip` |
+| Rule candidate hiện tại | direct-ratio challenger v29 (planned) |
+| Điểm tốt nhất đã nộp | TABLES_F2 .5530 / DOCS_F2 .9420 / ANSWER .4644 / EXEC .4644 |
+| Checkpoint codegen | `artifacts/codegen_tranhuy_04625_plus_exact_growth_v28_audited3_w010.jsonl` |
+| Checkpoint submission | `artifacts/submission_tranhuy_04625_plus_exact_growth_v28_audited3_w010/submission.zip` |
+| Candidate chờ nộp | chưa có; audit direct ratio trên checkpoint V28 |
 | Backend LLM Kaggle | `hf` (transformers). **vLLM không chạy trên T4** |
 
 V23 audit toàn bộ 383 câu LLM single-vote, thay đúng 15 lookup exact và giữ
@@ -1740,3 +1740,10 @@ three accepted answers are `586=335.82`, `631=31.31`, and `647=37.46`.
 Verification: exactly three rows change and 1,009 remain unchanged; 401 tests
 pass; all 1,012 queries compile and replay from 2,092 packaged CSV files; ZIP
 integrity passes. No Qwen rerun is required.
+
+Leaderboard V28: `TABLES_F2MACRO=0.5530`, `DOCS_F2MACRO=0.9420`, and
+`EXECUTION_ACCURACY=0.4644`. This is a `+0.0019` gain over V27, approximately
+one additional correct answer on the inferred 506-question scoring subset.
+V28 is the new checkpoint, but the direct-growth cohort is closed because the
+three replacements produced only one net correct answer. Continue with a
+separate direct-ratio audit so its impact can be isolated.
